@@ -20,6 +20,7 @@ npm-debug.log*
 !.env.example
 *.pem
 *.key
+/secrets/*.txt
 
 # Engine binaries / weights (installed locally, not vendored in git)
 **/engines/bin/

@@ -3,9 +3,11 @@
 ## Context
 
 New, standalone project: an AI-powered tutor for chess and Go. Requires authenticated
-users so skill/progress persists across sessions. On a user's first game, the tutor plays
-against them mostly silently to gauge their level (a calibration game), then tutors from
-that baseline in subsequent games using a real-time voice agent for spoken instruction.
+users so skill/progress persists across sessions. A "rate my play" game mode plays
+against the user mostly silently to gauge their level, then tutors from that baseline in
+subsequent games using a real-time voice agent for spoken instruction. "Rate my play" is
+not a one-time first-game event — the user can request it again any time to
+recalibrate.
 
 Confirmed decisions (already asked and answered):
 1. **Standalone new repo** — not built inside `agent_framework`'s module/builder system.
@@ -147,6 +149,25 @@ forced positions. `ACPL = mean(loss)`. Map ACPL → Elo via a monotonic anchor t
 behind Lichess's own centipawn-loss-based accuracy formula. Store per-move classification
 buckets too (blunder/mistake/inaccuracy/good/best), not just the mean — a single-blunder
 player and a consistently-sloppy player can share an ACPL but need different tutoring.
+
+**Decision (2026-08-05, revised): "rate my play" opponent starting strength is
+system-determined by default, and user-overridable.** Not a hardcoded constant (an
+earlier version of this doc floated a fixed 1800 minimum — superseded). Resolution order
+when starting a "rate my play" game:
+1. If the caller explicitly supplies a starting Elo/rank override, use it (validated
+   against the engine's supported range — Stockfish's `UCI_Elo` floor is 1320, confirmed
+   in Phase 0; below that, fall back to `Skill Level` per the Phase 0 findings).
+2. Else if the user already has a `SkillProfile` for this `game_type` (from a prior "rate
+   my play" game), seed the opponent from the current `estimated_rating`.
+3. Else (first-ever "rate my play" game, no profile yet), use a sensible platform default
+   (exact value TBD at implementation time — no longer fixed at 1800; pick something
+   reasonable and document it in code, not silently baked into multiple places in this
+   doc).
+
+"Rate my play" is a repeatable game mode (`Game.is_calibration = true` marks any game as
+one, not just a user's first game ever), triggerable on demand — the `POST /games`
+endpoint (or a dedicated `POST /games/rate-my-play`) accepts an optional
+`starting_elo_override` param implementing step 1 above.
 
 **Go**: per human move, `score_loss = max(0, scoreLead_best − scoreLead_actual)` from
 KataGo's analysis engine, excluding opening and dame-filling moves. Average → rank via an
