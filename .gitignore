@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+npm-debug.log*
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Engine binaries / weights (installed locally, not vendored in git)
+/engines/bin/
+*.bin.gz
+*.gz
+
+# OS / editor
+.DS_Store
+*.swp
+
+# Logs
+*.log
