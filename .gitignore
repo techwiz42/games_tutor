@@ -22,7 +22,8 @@ npm-debug.log*
 *.key
 
 # Engine binaries / weights (installed locally, not vendored in git)
-/engines/bin/
+**/engines/bin/
+**/engines/models/
 *.bin.gz
 *.gz
 
