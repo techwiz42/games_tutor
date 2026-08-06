@@ -53,9 +53,21 @@ defmodule GamesTutor.Voice.ToolsTest do
     refute Tools.instructions("calibration_proctor", "go") =~ "castle"
   end
 
-  test "tutoring instructions differ from calibration_proctor and mention how moves are made" do
-    assert Tools.instructions("tutoring", "chess") != Tools.instructions("calibration_proctor", "chess")
-    assert Tools.instructions("tutoring", "chess") =~ "dragging"
-    assert Tools.instructions("tutoring", "go") =~ "clicking"
+  test "tutoring instructions differ from calibration_proctor, for both game types" do
+    for game_type <- ~w(chess go) do
+      assert Tools.instructions("tutoring", game_type) != Tools.instructions("calibration_proctor", game_type)
+      assert Tools.instructions("tutoring", game_type) =~ game_type
+    end
+  end
+
+  test "tutoring instructions require grounding in real engine output, not invented analysis" do
+    text = Tools.instructions("tutoring", "chess")
+    assert text =~ "engine_best_move"
+    assert text =~ "never invented"
+  end
+
+  test "tutoring instructions frame this as a single self-contained answer, not open conversation" do
+    text = Tools.instructions("tutoring", "chess")
+    assert text =~ "not an open-ended conversation"
   end
 end

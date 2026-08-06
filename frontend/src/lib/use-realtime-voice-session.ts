@@ -6,7 +6,12 @@ import { getBoardState, getMoveAnalysis, requestHint, updateExplanationDepth, li
 
 export type VoiceStatus = "idle" | "requesting-permission" | "connecting" | "connected" | "ended" | "error";
 
-export type TranscriptEntry = { role: "assistant"; text: string };
+// How long to wait after OpenAI reports a response done before actually
+// tearing down the connection -- response.done means generation finished
+// server-side, not that the last audio frames have finished draining out of
+// the <audio> element's playback buffer. Cutting the connection immediately
+// clips the last words of the explanation.
+const EXPLANATION_END_GRACE_MS = 1500;
 
 // dcRef.current flips to "open" slightly after `status` becomes "connected"
 // (WebRTC data-channel negotiation, not gated on anything this hook awaits) --
@@ -39,7 +44,6 @@ function waitForOpenChannel(dcRef: { current: RTCDataChannel | null }, timeoutMs
 export function useRealtimeVoiceSession(gameId: string) {
   const [status, setStatus] = useState<VoiceStatus>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [isAssistantSpeaking, setIsAssistantSpeaking] = useState(false);
   const [isUserSpeaking, setIsUserSpeaking] = useState(false);
 
@@ -48,7 +52,13 @@ export function useRealtimeVoiceSession(gameId: string) {
   const streamRef = useRef<MediaStream | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const maxDurationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const currentUtteranceRef = useRef("");
+  const autoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Populated once `disconnect` exists (see the effect right after its
+  // definition) -- handleDataChannelMessage needs to call it from inside a
+  // response.done handler defined earlier in the file, without making
+  // itself (and therefore dc.onmessage) get redefined every time
+  // `disconnect`'s identity changes.
+  const disconnectRef = useRef<() => void>(() => {});
   const audioElRef = useRef<HTMLAudioElement | null>(null);
   // Real OpenAI-reported usage, accumulated across every response.done event
   // this session sees -- never fabricated; a field this app can't parse just
@@ -105,15 +115,10 @@ export function useRealtimeVoiceSession(gameId: string) {
 
         case "response.output_audio_transcript.delta":
           setIsAssistantSpeaking(true);
-          currentUtteranceRef.current += (event.delta as string) ?? "";
           break;
 
         case "response.done": {
           setIsAssistantSpeaking(false);
-          if (currentUtteranceRef.current) {
-            setTranscript((prev) => [...prev, { role: "assistant", text: currentUtteranceRef.current }]);
-            currentUtteranceRef.current = "";
-          }
 
           const response = event.response as { output?: Array<Record<string, unknown>>; usage?: { total_tokens?: unknown } };
 
@@ -126,8 +131,10 @@ export function useRealtimeVoiceSession(gameId: string) {
             totalTokensRef.current += usageTokens;
           }
 
+          let hadFunctionCall = false;
           for (const item of response?.output ?? []) {
             if (item.type === "function_call") {
+              hadFunctionCall = true;
               const callId = item.call_id as string;
               const name = item.name as string;
               const args = JSON.parse((item.arguments as string) || "{}");
@@ -142,6 +149,16 @@ export function useRealtimeVoiceSession(gameId: string) {
               dcRef.current?.send(JSON.stringify({ type: "response.create" }));
             }
           }
+
+          // A response with no function call is the tutor's actual spoken
+          // answer -- a tool-call round-trip always produces a further
+          // response.create above, which yields its own later response.done.
+          // This is meant to be one grounded explanation, not an open
+          // conversation (see tools.ex's tutoring instructions), so end the
+          // session once it lands rather than sitting connected/listening.
+          if (!hadFunctionCall) {
+            autoStopTimerRef.current = setTimeout(() => disconnectRef.current(), EXPLANATION_END_GRACE_MS);
+          }
           break;
         }
       }
@@ -151,6 +168,7 @@ export function useRealtimeVoiceSession(gameId: string) {
 
   const cleanup = useCallback(() => {
     if (maxDurationTimerRef.current) clearTimeout(maxDurationTimerRef.current);
+    if (autoStopTimerRef.current) clearTimeout(autoStopTimerRef.current);
     dcRef.current?.close();
     pcRef.current?.close();
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -174,6 +192,26 @@ export function useRealtimeVoiceSession(gameId: string) {
     setIsUserSpeaking(false);
   }, [cleanup]);
 
+  useEffect(() => {
+    disconnectRef.current = disconnect;
+  }, [disconnect]);
+
+  // The Stop button's action -- unlike the automatic end-of-explanation
+  // disconnect above (which waits EXPLANATION_END_GRACE_MS to avoid clipping
+  // trailing audio), this is a deliberate interrupt: cancel any pending
+  // auto-stop, tell OpenAI to stop generating right away, then tear down
+  // immediately rather than waiting for anything to finish.
+  const stop = useCallback(() => {
+    if (autoStopTimerRef.current) {
+      clearTimeout(autoStopTimerRef.current);
+      autoStopTimerRef.current = null;
+    }
+    if (dcRef.current?.readyState === "open") {
+      dcRef.current.send(JSON.stringify({ type: "response.cancel" }));
+    }
+    disconnect();
+  }, [disconnect]);
+
   // Without this, navigating away from the game page (e.g. to start a new
   // game) while a voice session is still connected -- the game just ended,
   // say -- never calls endVoiceSession: the per-user "one active session"
@@ -194,7 +232,6 @@ export function useRealtimeVoiceSession(gameId: string) {
 
   const connect = useCallback(async () => {
     setError(null);
-    setTranscript([]);
     totalTokensRef.current = 0;
     setStatus("requesting-permission");
 
@@ -297,10 +334,10 @@ export function useRealtimeVoiceSession(gameId: string) {
   return {
     status,
     error,
-    transcript,
     isAssistantSpeaking,
     isUserSpeaking,
     disconnect,
+    stop,
     askAboutMove,
     audioElRef,
   };

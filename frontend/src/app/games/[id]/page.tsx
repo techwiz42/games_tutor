@@ -7,7 +7,7 @@ import { Chessboard } from "react-chessboard";
 import type { PieceDropHandlerArgs } from "react-chessboard";
 import { ProtectedRoute } from "@/lib/protected-route";
 import { getGame, submitMove, resignGame, undoMove, Game, Move, SkillProfile } from "@/lib/games-api";
-import { useRealtimeVoiceSession, VoiceStatus, TranscriptEntry } from "@/lib/use-realtime-voice-session";
+import { useRealtimeVoiceSession, VoiceStatus } from "@/lib/use-realtime-voice-session";
 import {
   pageWrap,
   navBar,
@@ -54,18 +54,23 @@ function CalibrationSummary({ profile }: { profile: SkillProfile }) {
 type VoiceHook = {
   status: VoiceStatus;
   error: string | null;
-  transcript: TranscriptEntry[];
   isAssistantSpeaking: boolean;
   isUserSpeaking: boolean;
   disconnect: () => void;
+  stop: () => void;
   audioElRef: React.RefObject<HTMLAudioElement | null>;
 };
 
 // Presentational only -- the hook itself is lifted into GameContent so
 // MoveRow's "Ask tutor why" links can call askAboutMove, the sole way a
 // session starts (no general-purpose "start voice tutor" entry point).
+// Voice-only (no on-screen transcript) and transient: renders nothing at
+// rest, appears for the duration of one spoken explanation, then
+// disappears again once use-realtime-voice-session.ts's auto-stop (or the
+// Stop button below) ends the session -- there's no persistent "voice
+// tutor" panel sitting on the page.
 function VoicePanel({ voice, gameInProgress }: { voice: VoiceHook; gameInProgress: boolean }) {
-  const { status, error, transcript, isAssistantSpeaking, isUserSpeaking, disconnect, audioElRef } = voice;
+  const { status, error, isAssistantSpeaking, isUserSpeaking, disconnect, stop, audioElRef } = voice;
 
   // End the voice session as soon as the game itself ends, rather than
   // sitting connected (mic still hot) indefinitely just because the player
@@ -76,39 +81,26 @@ function VoicePanel({ voice, gameInProgress }: { voice: VoiceHook; gameInProgres
     }
   }, [gameInProgress, status, disconnect]);
 
+  if (status === "idle" || status === "ended") return null;
+
   const statusLabel = {
-    idle: "Click \"Ask tutor why\" next to any non-best move to hear an explanation.",
     "requesting-permission": "Requesting microphone permission...",
     connecting: "Connecting...",
-    connected: isAssistantSpeaking ? "Speaking..." : isUserSpeaking ? "Listening..." : "Connected",
-    ended: "Session ended",
+    connected: isAssistantSpeaking ? "Explaining..." : isUserSpeaking ? "Listening..." : "Connected",
     error: "Error",
   }[status];
 
   return (
     <div className={`${card} mt-4`}>
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Voice tutor</h3>
-        {status === "connected" && (
-          <button onClick={disconnect} className={buttonSecondary}>
-            End voice session
-          </button>
-        )}
+      <div className="flex items-center justify-between">
+        <p className={mutedText}>{statusLabel}</p>
+        <button onClick={stop} className={buttonSecondary}>
+          Stop
+        </button>
       </div>
-      <p className={mutedText}>{statusLabel}</p>
       {error && <p className="text-sm text-red-600 dark:text-red-400 mt-1">{error}</p>}
 
       <audio ref={audioElRef} autoPlay />
-
-      {transcript.length > 0 && (
-        <div className="mt-3 max-h-48 overflow-y-auto text-sm flex flex-col gap-1.5 border-t border-zinc-200 dark:border-zinc-800 pt-3">
-          {transcript.map((entry, i) => (
-            <p key={i} className="text-zinc-700 dark:text-zinc-300">
-              {entry.text}
-            </p>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
