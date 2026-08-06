@@ -75,6 +75,25 @@ defmodule GamesTutorWeb.Telemetry do
           "The time the connection spent waiting before being checked out for the query"
       ),
 
+      # Engine Metrics -- Stockfish/KataGo query latency, emitted by
+      # GamesTutor.Chess.GameServer / GamesTutor.Go.GameServer via
+      # :telemetry.span/3 around every real engine subprocess call.
+      summary("games_tutor.engine.query.stop.duration",
+        tags: [:engine, :kind],
+        unit: {:native, :millisecond},
+        description: "Real Stockfish/KataGo query latency"
+      ),
+      summary("games_tutor.engine.query.exception.duration",
+        tags: [:engine, :kind],
+        unit: {:native, :millisecond}
+      ),
+
+      # Voice Metrics -- no raw audio or PII, just mode + duration/cost
+      # (see GamesTutor.Voice.start_session/2, end_session/2).
+      sum("games_tutor.voice.session_started.count", tags: [:mode]),
+      summary("games_tutor.voice.session_ended.duration_seconds", tags: [:mode]),
+      summary("games_tutor.voice.session_ended.estimated_cost_usd", tags: [:mode]),
+
       # VM Metrics
       summary("vm.memory.total", unit: {:byte, :kilobyte}),
       summary("vm.total_run_queue_lengths.total"),

@@ -102,8 +102,7 @@ defmodule GamesTutor.Go.GameServerTest do
       ["W", "H2"],
       ["B", "C4"],
       # Filler White move -- keeps the history's move count odd (started
-      # with White) so it's Black's (the human's) turn next, matching
-      # submit_human_move/2's hardcoded "B" mover.
+      # with White) so it's Black's (the default human color's) turn next.
       ["W", "H3"]
     ]
 
@@ -122,6 +121,76 @@ defmodule GamesTutor.Go.GameServerTest do
     assert stone_at(grid, "H3") == :white
     assert stone_at(grid, "B5") == :black
     assert stone_at(grid, "C6") == :black
+  end
+
+  test "maybe_play_opening_move is a no-op when the human plays the default color (Black)" do
+    game_id = new_game_id()
+    {:ok, _pid} = GameServer.ensure_started(game_id, %{"max_visits" => 10})
+    assert {:ok, :not_applicable} = GameServer.maybe_play_opening_move(game_id)
+  end
+
+  test "maybe_play_opening_move plays a real Black opening move when the human chose White" do
+    game_id = new_game_id()
+    {:ok, _pid} = GameServer.ensure_started(game_id, %{"max_visits" => 10}, [], "white")
+
+    assert {:ok, %{engine_move: move}} = GameServer.maybe_play_opening_move(game_id)
+    assert move.player == "engine"
+    assert move.ply == 1
+    assert move.uci == "pass" or move.uci =~ ~r/^[A-Za-z]\d{1,2}$/
+
+    # It's genuinely the human's (White's) turn now -- a live move applies cleanly.
+    assert {:ok, %{status: :continue, human_move: human}} = GameServer.submit_human_move(game_id, "E5")
+    assert human.ply == 2
+  end
+
+  test "maybe_play_opening_move only acts once, even if called again" do
+    game_id = new_game_id()
+    {:ok, _pid} = GameServer.ensure_started(game_id, %{"max_visits" => 10}, [], "white")
+    assert {:ok, %{engine_move: _}} = GameServer.maybe_play_opening_move(game_id)
+    assert {:ok, :not_applicable} = GameServer.maybe_play_opening_move(game_id)
+  end
+
+  test "with the human playing White, human moves are tagged W and engine replies are tagged B" do
+    game_id = new_game_id()
+    {:ok, _pid} = GameServer.ensure_started(game_id, %{"max_visits" => 10}, [], "white")
+    {:ok, %{engine_move: _}} = GameServer.maybe_play_opening_move(game_id)
+
+    assert {:ok, %{status: :continue, human_move: human, engine_move: engine}} =
+             GameServer.submit_human_move(game_id, "E5")
+
+    assert human.player == "human"
+    assert engine.player == "engine"
+    # White (the human here) stones show as -1 on the grid; confirm the
+    # human's own move landed as White, not Black.
+    assert {:ok, grid} = GameServer.board_grid(game_id)
+    assert stone_at(grid, "E5") == :white
+  end
+
+  test "undo rebuilds local board/history state from a truncated history" do
+    game_id = new_game_id()
+    history = [["B", "E5"], ["W", "C3"]]
+    {:ok, _pid} = GameServer.ensure_started(game_id, %{"max_visits" => 10}, history)
+
+    assert :ok = GameServer.undo(game_id, [["B", "E5"]])
+
+    assert {:ok, grid} = GameServer.board_grid(game_id)
+    assert stone_at(grid, "E5") == :black
+    assert stone_at(grid, "C3") == :empty
+  end
+
+  test "undo to an empty history clears the board and resets consecutive_passes" do
+    game_id = new_game_id()
+    history = [["B", "C5"], ["W", "pass"]]
+    {:ok, _pid} = GameServer.ensure_started(game_id, %{"max_visits" => 10}, history)
+
+    assert :ok = GameServer.undo(game_id, [])
+
+    assert {:ok, grid} = GameServer.board_grid(game_id)
+    assert Enum.all?(List.flatten(grid), &(&1 == 0))
+
+    # consecutive_passes reset to 0 -- a single live pass (ply 1, the default
+    # human color's opening move) shouldn't end the game on its own.
+    assert {:ok, %{status: :continue}} = GameServer.submit_human_move(game_id, "pass")
   end
 
   # grid is row-major with row 0 = top (rank 9 on a 9x9 board) -- see

@@ -18,9 +18,10 @@ defmodule GamesTutorWeb.AuthController do
 
   def login(conn, %{"email" => email, "password" => password}) do
     with :ok <- check_ip_rate_limit(conn, "login", 20, 900) do
-      case Accounts.authenticate_user(email, password) do
+      case Accounts.authenticate_user(email, password, client_ip(conn)) do
         {:ok, user} -> render_tokens(conn, user, :ok)
         {:error, :not_confirmed} -> {:error, :not_confirmed}
+        {:error, :banned} -> {:error, :banned}
         {:error, :invalid_credentials} -> {:error, :invalid_credentials}
       end
     end
@@ -112,7 +113,7 @@ defmodule GamesTutorWeb.AuthController do
     if Accounts.OAuthStateStore.consume(state) do
       case Google.exchange_code_for_user_info(code) do
         {:ok, claims} ->
-          case Accounts.find_or_create_from_google(claims) do
+          case Accounts.find_or_create_from_google(claims, client_ip(conn)) do
             {:ok, user} ->
               access_token = Guardian.issue_access_token(user)
               {:ok, refresh_token} = Accounts.issue_refresh_token(user, [])
@@ -121,6 +122,9 @@ defmodule GamesTutorWeb.AuthController do
                 external:
                   "#{frontend_url}/auth/callback#access_token=#{access_token}&refresh_token=#{refresh_token}"
               )
+
+            {:error, :banned} ->
+              redirect(conn, external: "#{frontend_url}/login?error=banned")
 
             {:error, _changeset} ->
               redirect(conn, external: "#{frontend_url}/login?error=google_account_error")
@@ -146,8 +150,21 @@ defmodule GamesTutorWeb.AuthController do
   # lock them out, a self-inflicted denial-of-service. IP-based bounds
   # automated abuse from a single source without that risk.
   defp check_ip_rate_limit(conn, bucket, max, window_seconds) do
-    ip = conn.remote_ip |> :inet.ntoa() |> to_string()
-    GamesTutor.RateLimit.check("ratelimit:#{bucket}:#{ip}", max, window_seconds)
+    GamesTutor.RateLimit.check("ratelimit:#{bucket}:#{client_ip(conn)}", max, window_seconds)
+  end
+
+  # The frontend proxies /api/* server-to-server (Next.js rewrites -- see
+  # frontend/next.config.ts), so conn.remote_ip is always the frontend
+  # container's docker IP, not the real client -- every request would
+  # otherwise look like it came from the same place. nginx (the actual
+  # public-facing edge, see /etc/nginx/sites-available/games.cyberiad.ai) sets
+  # X-Forwarded-For correctly; that header survives the Next.js proxy hop
+  # since rewrites() forwards incoming headers as-is.
+  defp client_ip(conn) do
+    case Plug.Conn.get_req_header(conn, "x-forwarded-for") do
+      [value | _] -> value |> String.split(",") |> List.first() |> String.trim()
+      [] -> conn.remote_ip |> :inet.ntoa() |> to_string()
+    end
   end
 
   defp render_tokens(conn, user, status) do
@@ -171,7 +188,8 @@ defmodule GamesTutorWeb.AuthController do
       created_at: user.inserted_at,
       confirmed: not is_nil(user.confirmed_at),
       has_password: not is_nil(user.hashed_password),
-      has_google: not is_nil(user.google_id)
+      has_google: not is_nil(user.google_id),
+      is_admin: user.is_admin
     })
   end
 end

@@ -6,8 +6,20 @@ import dynamic from "next/dynamic";
 import { Chessboard } from "react-chessboard";
 import type { PieceDropHandlerArgs } from "react-chessboard";
 import { ProtectedRoute } from "@/lib/protected-route";
-import { getGame, submitMove, resignGame, Game, Move, SkillProfile } from "@/lib/games-api";
-import { useRealtimeVoiceSession } from "@/lib/use-realtime-voice-session";
+import { getGame, submitMove, resignGame, undoMove, Game, Move, SkillProfile } from "@/lib/games-api";
+import { useRealtimeVoiceSession, VoiceStatus, TranscriptEntry } from "@/lib/use-realtime-voice-session";
+import {
+  pageWrap,
+  navBar,
+  navBrand,
+  navBrandAccent,
+  card,
+  buttonSecondary,
+  buttonDanger,
+  linkButton,
+  mutedText,
+  classificationBadgeClass,
+} from "@/lib/auth-ui";
 
 // Shudan's render is non-deterministic between server and client passes (an
 // internal `random` prop for fuzzy stone placement), which causes a
@@ -29,22 +41,43 @@ function CalibrationSummary({ profile }: { profile: SkillProfile }) {
       : `Based on ${profile.games_count} calibration games so far -- still improving with each one.`;
 
   return (
-    <div style={{ marginTop: 12, padding: 12, border: "1px solid #ccc", maxWidth: 420 }}>
-      <h3 style={{ marginTop: 0 }}>Rate my play: result</h3>
-      <p>
+    <div className={`${card} mt-4`}>
+      <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50 mb-1">Rate my play: result</h3>
+      <p className="text-zinc-900 dark:text-zinc-50">
         Estimated rating: <strong>{profile.estimated_rating}</strong> ({profile.display_label})
       </p>
-      <p style={{ opacity: 0.7, fontSize: 14 }}>{hedge}</p>
+      <p className={`${mutedText} mt-1`}>{hedge}</p>
     </div>
   );
 }
 
-function VoicePanel({ gameId }: { gameId: string }) {
-  const { status, error, transcript, isAssistantSpeaking, isUserSpeaking, connect, disconnect, audioElRef } =
-    useRealtimeVoiceSession(gameId);
+type VoiceHook = {
+  status: VoiceStatus;
+  error: string | null;
+  transcript: TranscriptEntry[];
+  isAssistantSpeaking: boolean;
+  isUserSpeaking: boolean;
+  disconnect: () => void;
+  audioElRef: React.RefObject<HTMLAudioElement | null>;
+};
+
+// Presentational only -- the hook itself is lifted into GameContent so
+// MoveRow's "Ask tutor why" links can call askAboutMove, the sole way a
+// session starts (no general-purpose "start voice tutor" entry point).
+function VoicePanel({ voice, gameInProgress }: { voice: VoiceHook; gameInProgress: boolean }) {
+  const { status, error, transcript, isAssistantSpeaking, isUserSpeaking, disconnect, audioElRef } = voice;
+
+  // End the voice session as soon as the game itself ends, rather than
+  // sitting connected (mic still hot) indefinitely just because the player
+  // hasn't navigated away yet.
+  useEffect(() => {
+    if (!gameInProgress && status === "connected") {
+      disconnect();
+    }
+  }, [gameInProgress, status, disconnect]);
 
   const statusLabel = {
-    idle: "Not connected",
+    idle: "Click \"Ask tutor why\" next to any non-best move to hear an explanation.",
     "requesting-permission": "Requesting microphone permission...",
     connecting: "Connecting...",
     connected: isAssistantSpeaking ? "Speaking..." : isUserSpeaking ? "Listening..." : "Connected",
@@ -53,25 +86,24 @@ function VoicePanel({ gameId }: { gameId: string }) {
   }[status];
 
   return (
-    <div style={{ marginTop: 16, padding: 12, border: "1px solid #ccc", maxWidth: 420 }}>
-      <h3 style={{ marginTop: 0 }}>Voice tutor</h3>
-      <p>{statusLabel}</p>
-      {error && <p style={{ color: "red" }}>{error}</p>}
-
-      {status === "connected" ? (
-        <button onClick={disconnect}>End voice session</button>
-      ) : (
-        <button onClick={connect} disabled={status === "requesting-permission" || status === "connecting"}>
-          Start voice tutor
-        </button>
-      )}
+    <div className={`${card} mt-4`}>
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Voice tutor</h3>
+        {status === "connected" && (
+          <button onClick={disconnect} className={buttonSecondary}>
+            End voice session
+          </button>
+        )}
+      </div>
+      <p className={mutedText}>{statusLabel}</p>
+      {error && <p className="text-sm text-red-600 dark:text-red-400 mt-1">{error}</p>}
 
       <audio ref={audioElRef} autoPlay />
 
       {transcript.length > 0 && (
-        <div style={{ marginTop: 12, maxHeight: 200, overflowY: "auto", fontSize: 14 }}>
+        <div className="mt-3 max-h-48 overflow-y-auto text-sm flex flex-col gap-1.5 border-t border-zinc-200 dark:border-zinc-800 pt-3">
           {transcript.map((entry, i) => (
-            <p key={i} style={{ margin: "4px 0" }}>
+            <p key={i} className="text-zinc-700 dark:text-zinc-300">
               {entry.text}
             </p>
           ))}
@@ -81,14 +113,23 @@ function VoicePanel({ gameId }: { gameId: string }) {
   );
 }
 
-function MoveRow({ move }: { move: Move }) {
+function MoveRow({ move, onAskWhy }: { move: Move; onAskWhy: (move: Move) => void }) {
+  const askable = move.player === "human" && !!move.classification && move.classification !== "best";
+
   return (
-    <tr>
-      <td style={{ padding: "2px 8px" }}>{move.ply}</td>
-      <td style={{ padding: "2px 8px" }}>{move.player === "human" ? "You" : "Engine"}</td>
-      <td style={{ padding: "2px 8px", fontFamily: "monospace" }}>{move.notation}</td>
-      <td style={{ padding: "2px 8px" }}>{move.classification ?? "--"}</td>
-      <td style={{ padding: "2px 8px" }}>{move.loss ?? "--"}</td>
+    <tr className="border-b border-zinc-100 dark:border-zinc-800/60 last:border-0">
+      <td className="px-2 py-1.5 text-zinc-500 dark:text-zinc-400">{move.ply}</td>
+      <td className="px-2 py-1.5 text-zinc-700 dark:text-zinc-300">{move.player === "human" ? "You" : "Engine"}</td>
+      <td className="px-2 py-1.5 font-mono text-zinc-900 dark:text-zinc-50">{move.notation}</td>
+      <td className="px-2 py-1.5">{move.classification && <span className={classificationBadgeClass(move.classification)}>{move.classification}</span>}</td>
+      <td className="px-2 py-1.5 text-zinc-500 dark:text-zinc-400">{move.loss ?? "--"}</td>
+      <td className="px-2 py-1.5">
+        {askable && (
+          <button onClick={() => onAskWhy(move)} className={linkButton}>
+            Ask tutor why
+          </button>
+        )}
+      </td>
     </tr>
   );
 }
@@ -98,6 +139,7 @@ function GameContent() {
   const [game, setGame] = useState<Game | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const voice = useRealtimeVoiceSession(id);
 
   useEffect(() => {
     getGame(id)
@@ -135,9 +177,12 @@ function GameContent() {
     ({ piece, sourceSquare, targetSquare }: PieceDropHandlerArgs) => {
       if (!targetSquare || submitting || !game || game.status !== "in_progress") return false;
 
-      // Auto-queen promotion (v1 simplification -- no promotion picker yet;
-      // human is always White, so only a pawn reaching rank 8 can promote).
-      const isPromotion = piece.pieceType === "wP" && targetSquare[1] === "8";
+      // Auto-queen promotion (v1 simplification -- no promotion picker yet).
+      // Which pawn/rank promotes depends on which color the human is
+      // playing: White pawns promote on rank 8, Black pawns on rank 1.
+      const humanPawn = game.human_color === "black" ? "bP" : "wP";
+      const promotionRank = game.human_color === "black" ? "1" : "8";
+      const isPromotion = piece.pieceType === humanPawn && targetSquare[1] === promotionRank;
       const uci = `${sourceSquare}${targetSquare}${isPromotion ? "q" : ""}`;
       submitMoveAndUpdate(uci);
 
@@ -163,67 +208,109 @@ function GameContent() {
     }
   };
 
-  if (error && !game) return <div style={{ padding: 24, color: "red" }}>{error}</div>;
-  if (!game) return <div style={{ padding: 24 }}>Loading...</div>;
+  const handleUndo = async () => {
+    if (!game) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const updated = await undoMove(id);
+      setGame(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Takeback failed");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleAskWhy = (move: Move) => {
+    voice.askAboutMove(
+      `Please explain why my move ${move.notation} (move ${move.ply}) wasn't the best, and what would have been better.`
+    );
+  };
+
+  if (error && !game) return <div className={`${pageWrap} text-red-600 dark:text-red-400`}>{error}</div>;
+  if (!game) return <div className={pageWrap}>Loading...</div>;
+
+  const canUndo = game.status !== "resigned" && game.status !== "aborted" && game.moves.length > 0 && !game.is_calibration;
 
   return (
-    <div style={{ maxWidth: 900, margin: "24px auto", padding: 24, display: "flex", gap: 32 }}>
-      <div>
-        {game.game_type === "go" ? (
-          <GoBoardPanel game={game} submitting={submitting} onMove={submitMoveAndUpdate} />
-        ) : (
-          <div style={{ width: 480 }}>
-            <Chessboard
-              options={{
-                position: game.fen,
-                boardOrientation: "white",
-                allowDragging: game.status === "in_progress" && !submitting,
-                canDragPiece: ({ piece }) => piece.pieceType.startsWith("w"),
-                onPieceDrop: handleDrop,
-              }}
-            />
+    <div className={pageWrap}>
+      <header className={navBar}>
+        <a href="/dashboard" className={navBrand}>
+          games<span className={navBrandAccent}>_tutor</span>
+        </a>
+        <a href="/games" className={linkButton}>
+          Back to games
+        </a>
+      </header>
+
+      <main className="max-w-5xl mx-auto grid gap-6 md:grid-cols-[auto_1fr] items-start">
+        <div>
+          <div className={card}>
+            {game.game_type === "go" ? (
+              <GoBoardPanel game={game} submitting={submitting} onMove={submitMoveAndUpdate} />
+            ) : (
+              <div style={{ width: 400 }}>
+                <Chessboard
+                  options={{
+                    position: game.fen,
+                    boardOrientation: game.human_color === "black" ? "black" : "white",
+                    allowDragging: game.status === "in_progress" && !submitting,
+                    canDragPiece: ({ piece }) => piece.pieceType.startsWith(game.human_color === "black" ? "b" : "w"),
+                    onPieceDrop: handleDrop,
+                  }}
+                />
+              </div>
+            )}
+
+            <div className="flex items-center justify-between mt-4">
+              <strong className="text-zinc-900 dark:text-zinc-50">{resultLabel(game)}</strong>
+              <div className="flex gap-2">
+                {canUndo && (
+                  <button onClick={handleUndo} disabled={submitting} className={buttonSecondary}>
+                    Take back
+                  </button>
+                )}
+                {game.status === "in_progress" && (
+                  <button onClick={handleResign} disabled={submitting} className={buttonDanger}>
+                    Resign
+                  </button>
+                )}
+              </div>
+            </div>
+            {error && <p className="text-sm text-red-600 dark:text-red-400 mt-2">{error}</p>}
           </div>
-        )}
-        <p style={{ marginTop: 12 }}>
-          <strong>{resultLabel(game)}</strong>
-          {game.status === "in_progress" && (
-            <button onClick={handleResign} disabled={submitting} style={{ marginLeft: 12 }}>
-              Resign
-            </button>
+
+          {game.status !== "in_progress" && game.is_calibration && game.skill_profile && (
+            <CalibrationSummary profile={game.skill_profile} />
           )}
-        </p>
-        {error && <p style={{ color: "red" }}>{error}</p>}
 
-        {game.status !== "in_progress" && game.is_calibration && game.skill_profile && (
-          <CalibrationSummary profile={game.skill_profile} />
-        )}
+          <VoicePanel voice={voice} gameInProgress={game.status === "in_progress"} />
+        </div>
 
-        <VoicePanel gameId={id} />
-
-        <p>
-          <a href="/games">Back to games</a>
-        </p>
-      </div>
-
-      <div>
-        <h3>Moves</h3>
-        <table style={{ borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ textAlign: "left", opacity: 0.6 }}>
-              <th style={{ padding: "2px 8px" }}>#</th>
-              <th style={{ padding: "2px 8px" }}>By</th>
-              <th style={{ padding: "2px 8px" }}>Move</th>
-              <th style={{ padding: "2px 8px" }}>Quality</th>
-              <th style={{ padding: "2px 8px" }}>Loss</th>
-            </tr>
-          </thead>
-          <tbody>
-            {game.moves.map((move) => (
-              <MoveRow key={move.ply} move={move} />
-            ))}
-          </tbody>
-        </table>
-      </div>
+        <div className={card}>
+          <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50 mb-3">Moves</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className={`text-left ${mutedText}`}>
+                  <th className="px-2 py-1 font-medium">#</th>
+                  <th className="px-2 py-1 font-medium">By</th>
+                  <th className="px-2 py-1 font-medium">Move</th>
+                  <th className="px-2 py-1 font-medium">Quality</th>
+                  <th className="px-2 py-1 font-medium">Loss</th>
+                  <th className="px-2 py-1 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {game.moves.map((move) => (
+                  <MoveRow key={move.ply} move={move} onAskWhy={handleAskWhy} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </main>
     </div>
   );
 }

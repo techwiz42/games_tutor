@@ -5,6 +5,7 @@ import { BoundedGoban } from "@sabaki/shudan";
 import "@sabaki/shudan/css/goban.css";
 import { parseGoBoard, vertexToCoord } from "@/lib/go-coords";
 import type { Game } from "@/lib/games-api";
+import { buttonSecondary } from "@/lib/auth-ui";
 
 // Shudan is a Preact component (aliased to react at the bundler level --
 // see next.config.ts); its own .d.ts still types against preact's
@@ -30,10 +31,10 @@ export default function GoBoardPanel({ game, submitting, onMove }: Props) {
 
   return (
     <div>
-      <div style={{ width: 480 }}>
+      <div style={{ width: 400 }}>
         <Goban
-          maxWidth={480}
-          maxHeight={480}
+          maxWidth={400}
+          maxHeight={400}
           signMap={grid}
           showCoordinates={true}
           fuzzyStonePlacement={true}
@@ -41,7 +42,7 @@ export default function GoBoardPanel({ game, submitting, onMove }: Props) {
           onVertexClick={handleVertexClick}
         />
       </div>
-      <button onClick={() => interactive && onMove("pass")} disabled={!interactive} style={{ marginTop: 8 }}>
+      <button onClick={() => interactive && onMove("pass")} disabled={!interactive} className={`${buttonSecondary} mt-3`}>
         Pass
       </button>
     </div>

@@ -4,6 +4,19 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import { API_URL } from "@/lib/api";
+import {
+  authPageWrap,
+  authCard,
+  authBrand,
+  authTitle,
+  authSubtitle,
+  authInput,
+  authButtonPrimary,
+  authButtonSecondary,
+  authLink,
+  authError,
+  authDivider,
+} from "@/lib/auth-ui";
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -48,45 +61,71 @@ export default function LoginPage() {
   };
 
   return (
-    <div style={{ maxWidth: 360, margin: "80px auto", padding: 24 }}>
-      <h1>Log in</h1>
-      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <input
-          type="email"
-          placeholder="Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          required
-        />
-        <input
-          type="password"
-          placeholder="Password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-        />
-        {error && <p style={{ color: "red" }}>{error}</p>}
-        {notConfirmed &&
-          (resendSent ? (
-            <p>Confirmation email resent -- check your inbox.</p>
-          ) : (
-            <button type="button" onClick={handleResendConfirmation}>
-              Resend confirmation email
-            </button>
-          ))}
-        <button type="submit" disabled={submitting}>
-          {submitting ? "Logging in..." : "Log in"}
+    <div className={authPageWrap}>
+      <div className={authCard}>
+        <div className={authBrand}>games_tutor</div>
+        <h1 className={authTitle}>Welcome back</h1>
+        <p className={authSubtitle}>Log in to keep playing and tutoring where you left off.</p>
+
+        <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className={authInput}
+            required
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className={authInput}
+            required
+          />
+
+          {error && (
+            <div className={authError}>
+              {error}
+              {notConfirmed &&
+                (resendSent ? (
+                  <p className="mt-1">Confirmation email resent -- check your inbox.</p>
+                ) : (
+                  <button type="button" onClick={handleResendConfirmation} className="mt-1 underline block">
+                    Resend confirmation email
+                  </button>
+                ))}
+            </div>
+          )}
+
+          <button type="submit" disabled={submitting} className={authButtonPrimary}>
+            {submitting ? "Logging in..." : "Log in"}
+          </button>
+        </form>
+
+        <div className={authDivider}>
+          <span className="flex-1 border-t border-zinc-200 dark:border-zinc-800" />
+          or
+          <span className="flex-1 border-t border-zinc-200 dark:border-zinc-800" />
+        </div>
+
+        <button onClick={handleGoogleLogin} className={authButtonSecondary}>
+          Continue with Google
         </button>
-      </form>
-      <button onClick={handleGoogleLogin} style={{ marginTop: 12, width: "100%" }}>
-        Continue with Google
-      </button>
-      <p style={{ marginTop: 16 }}>
-        <a href="/forgot-password">Forgot password?</a>
-      </p>
-      <p style={{ marginTop: 8 }}>
-        No account? <a href="/register">Register</a>
-      </p>
+
+        <p className="mt-6 text-center text-sm text-zinc-500 dark:text-zinc-400">
+          <a href="/forgot-password" className={authLink}>
+            Forgot password?
+          </a>
+        </p>
+        <p className="mt-2 text-center text-sm text-zinc-500 dark:text-zinc-400">
+          No account?{" "}
+          <a href="/register" className={authLink}>
+            Register
+          </a>
+        </p>
+      </div>
     </div>
   );
 }

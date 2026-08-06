@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { API_URL } from "@/lib/api";
+import { authPageWrap, authCard, authBrand, authTitle, authSubtitle, authInput, authButtonPrimary, authLink } from "@/lib/auth-ui";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
@@ -28,35 +29,48 @@ export default function ForgotPasswordPage() {
 
   if (submitted) {
     return (
-      <div style={{ maxWidth: 360, margin: "80px auto", padding: 24, textAlign: "center" }}>
-        <h1>Check your email</h1>
-        <p>If that email is registered, a password reset link has been sent.</p>
-        <p>
-          <a href="/login">Back to login</a>
-        </p>
+      <div className={authPageWrap}>
+        <div className={`${authCard} text-center`}>
+          <div className={authBrand}>games_tutor</div>
+          <h1 className={authTitle}>Check your email</h1>
+          <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-300">
+            If that email is registered, a password reset link has been sent.
+          </p>
+          <p className="mt-6 text-sm">
+            <a href="/login" className={authLink}>
+              Back to login
+            </a>
+          </p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div style={{ maxWidth: 360, margin: "80px auto", padding: 24 }}>
-      <h1>Forgot your password?</h1>
-      <p>Enter your email and we&apos;ll send you a reset link.</p>
-      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <input
-          type="email"
-          placeholder="Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          required
-        />
-        <button type="submit" disabled={submitting}>
-          {submitting ? "Sending..." : "Send reset link"}
-        </button>
-      </form>
-      <p style={{ marginTop: 16 }}>
-        <a href="/login">Back to login</a>
-      </p>
+    <div className={authPageWrap}>
+      <div className={authCard}>
+        <div className={authBrand}>games_tutor</div>
+        <h1 className={authTitle}>Forgot your password?</h1>
+        <p className={authSubtitle}>Enter your email and we&apos;ll send you a reset link.</p>
+        <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className={authInput}
+            required
+          />
+          <button type="submit" disabled={submitting} className={authButtonPrimary}>
+            {submitting ? "Sending..." : "Send reset link"}
+          </button>
+        </form>
+        <p className="mt-6 text-center text-sm text-zinc-500 dark:text-zinc-400">
+          <a href="/login" className={authLink}>
+            Back to login
+          </a>
+        </p>
+      </div>
     </div>
   );
 }

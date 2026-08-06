@@ -47,9 +47,8 @@ defmodule GamesTutor.Games do
 
   def current_fen(%Game{}), do: @starting_fen
 
-  @doc "\"white\" for chess, \"black\" for Go -- which board color the human plays."
-  def human_color(%Game{game_type: "go"}), do: "black"
-  def human_color(%Game{}), do: "white"
+  @doc "Which board color the human plays in this game (a real per-game choice, see create_game/2)."
+  def human_color(%Game{human_color: color}), do: color
 
   def list_games(user) do
     Game
@@ -68,20 +67,31 @@ defmodule GamesTutor.Games do
   def create_game(user, attrs) do
     game_type = Map.get(attrs, "game_type", "chess")
     opponent_config = resolve_opponent_config(user, game_type, attrs)
+    human_color = resolve_human_color(game_type, attrs)
 
     game_attrs = %{
       user_id: user.id,
       game_type: game_type,
       is_calibration: !!Map.get(attrs, "is_calibration", false),
       opponent_engine_config: opponent_config,
+      human_color: human_color,
       started_at: DateTime.utc_now() |> DateTime.truncate(:second)
     }
 
     with {:ok, game} <- %Game{} |> Game.create_changeset(game_attrs) |> Repo.insert() do
-      {:ok, _pid} = game_server(game_type).ensure_started(game.id, opponent_config)
-      # A freshly inserted game has no moves yet -- known structurally, so
-      # set it directly rather than issuing a wasted preload query.
-      {:ok, %{game | moves: []}}
+      {:ok, _pid} = game_server(game_type).ensure_started(game.id, opponent_config, [], human_color)
+
+      # When the human plays second (Black in chess, White in Go), the
+      # engine's opening move happens synchronously here, right after the
+      # process starts, so it's never operationally "missing" from a freshly
+      # created game -- it's persisted as ply 1 same as any other move.
+      opening_moves =
+        case game_server(game_type).maybe_play_opening_move(game.id) do
+          {:ok, %{engine_move: attrs}} -> [insert_move!(game, attrs)]
+          {:ok, :not_applicable} -> []
+        end
+
+      {:ok, %{game | moves: opening_moves}}
     end
   end
 
@@ -137,6 +147,40 @@ defmodule GamesTutor.Games do
   end
 
   @doc """
+  Takes back the human's last move together with the engine's automatic reply to it
+  (always restores "your turn" -- this app has no standalone "let the engine move now"
+  path, so a bare single-ply rewind would leave the game stuck). If the human's last
+  move ended the game outright (checkmate/scored win, no engine reply exists), only
+  that one move is dropped and the game is reopened to `"in_progress"`.
+
+  Refused for calibration games (same reasoning as `hint/2` -- undoing a mistake would
+  contaminate the skill measurement) and for games with nothing to undo yet.
+  """
+  def undo_move(user, game_id) do
+    with {:ok, game} <- get_game(user, game_id),
+         :ok <- ensure_undoable(game) do
+      {:ok, _pid} = ensure_engine_started(game)
+      {dropped, kept} = split_for_undo(game.moves)
+
+      Repo.transaction(fn ->
+        Enum.each(dropped, &Repo.delete!/1)
+
+        game =
+          if game.status == "in_progress" do
+            game
+          else
+            game |> Game.reopen_changeset() |> Repo.update!()
+          end
+
+        game = %{game | moves: kept}
+        :ok = game_server(game.game_type).undo(game.id, replay_list(game))
+
+        game
+      end)
+    end
+  end
+
+  @doc """
   For the request_hint voice tool. Hard-refused for calibration games --
   enforced here in code (not just in the voice agent's prompted behavior),
   since hinting would contaminate the skill measurement.
@@ -163,18 +207,40 @@ defmodule GamesTutor.Games do
   defp game_server("go"), do: GamesTutor.Go.GameServer
 
   defp ensure_engine_started(%Game{game_type: "chess"} = game) do
-    GamesTutor.Chess.GameServer.ensure_started(game.id, game.opponent_engine_config, move_ucis(game))
+    GamesTutor.Chess.GameServer.ensure_started(game.id, game.opponent_engine_config, move_ucis(game), game.human_color)
   end
 
   defp ensure_engine_started(%Game{game_type: "go"} = game) do
-    GamesTutor.Go.GameServer.ensure_started(game.id, game.opponent_engine_config, go_history(game))
+    GamesTutor.Go.GameServer.ensure_started(game.id, game.opponent_engine_config, go_history(game), game.human_color)
   end
 
-  # Ply is odd for the mover who moves first (the human, in both game
-  # types -- see the moduledoc), even for the second mover (the engine).
-  defp side_to_move(%Game{moves: moves}) do
-    if rem(length(moves), 2) == 0, do: "human", else: "engine"
+  # The mover who moves first is either the human (the traditional default
+  # in both game types) or the engine, when the human chose to play second
+  # -- see create_game/2's synchronous opening-move handling.
+  defp side_to_move(%Game{moves: moves} = game) do
+    first_mover = if engine_moves_first?(game.game_type, game.human_color), do: "engine", else: "human"
+    if rem(length(moves), 2) == 0, do: first_mover, else: other_player(first_mover)
   end
+
+  defp other_player("human"), do: "engine"
+  defp other_player("engine"), do: "human"
+
+  # White always moves first in chess, Black always moves first in Go (the
+  # conventional "student" role games_tutor gives the human by default) --
+  # so the engine only ever opens when the human chose the *other* color.
+  defp engine_moves_first?("chess", "black"), do: true
+  defp engine_moves_first?("go", "white"), do: true
+  defp engine_moves_first?(_game_type, _human_color), do: false
+
+  defp resolve_human_color(game_type, attrs) do
+    case Map.get(attrs, "human_color") do
+      color when color in ["white", "black"] -> color
+      _ -> default_human_color(game_type)
+    end
+  end
+
+  defp default_human_color("go"), do: "black"
+  defp default_human_color(_chess), do: "white"
 
   defp resolve_opponent_config(_user, "chess", %{"opponent_elo" => elo}) when is_integer(elo),
     do: %{"elo" => elo}
@@ -209,11 +275,34 @@ defmodule GamesTutor.Games do
   defp ensure_in_progress(%Game{status: "in_progress"}), do: :ok
   defp ensure_in_progress(%Game{}), do: {:error, :game_over}
 
+  # "resigned"/"aborted" aren't caused by a stored move (resign/2 inserts no Move
+  # row), so there's nothing for undo to meaningfully take back in those states.
+  @undoable_statuses ~w(in_progress checkmate stalemate draw scored)
+
+  defp ensure_undoable(%Game{is_calibration: true}), do: {:error, :undo_refused_calibration}
+  defp ensure_undoable(%Game{moves: []}), do: {:error, :no_moves_to_undo}
+  defp ensure_undoable(%Game{status: status}) when status in @undoable_statuses, do: :ok
+  defp ensure_undoable(%Game{}), do: {:error, :cannot_undo}
+
+  # Drops the engine's reply plus the human move that prompted it (the normal case --
+  # always restores "your turn"), unless the very last move was the human's own and
+  # ended the game outright (no engine reply exists to drop alongside it).
+  defp split_for_undo(moves) do
+    n = if List.last(moves).player == "engine", do: 2, else: 1
+    {kept, dropped} = Enum.split(moves, length(moves) - n)
+    {dropped, kept}
+  end
+
+  defp replay_list(%Game{game_type: "chess"} = game), do: move_ucis(game)
+  defp replay_list(%Game{game_type: "go"} = game), do: go_history(game)
+
   defp move_ucis(%Game{moves: moves}) when is_list(moves), do: Enum.map(moves, & &1.uci)
   defp move_ucis(%Game{}), do: []
 
-  defp go_history(%Game{moves: moves}) when is_list(moves) do
-    Enum.map(moves, fn m -> [if(m.player == "human", do: "B", else: "W"), m.uci] end)
+  defp go_history(%Game{moves: moves, human_color: human_color}) when is_list(moves) do
+    human_tag = if human_color == "black", do: "B", else: "W"
+    engine_tag = if human_tag == "B", do: "W", else: "B"
+    Enum.map(moves, fn m -> [if(m.player == "human", do: human_tag, else: engine_tag), m.uci] end)
   end
 
   defp go_history(%Game{}), do: []

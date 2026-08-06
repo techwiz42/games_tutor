@@ -15,6 +15,10 @@ defmodule GamesTutorWeb.FallbackController do
     |> json(%{detail: "Please confirm your email before logging in", code: "not_confirmed"})
   end
 
+  def call(conn, {:error, :banned}) do
+    conn |> put_status(:forbidden) |> json(%{detail: "This account has been suspended", code: "banned"})
+  end
+
   def call(conn, {:error, :invalid}) do
     conn |> put_status(:unauthorized) |> json(%{detail: "Invalid refresh token"})
   end
@@ -56,6 +60,23 @@ defmodule GamesTutorWeb.FallbackController do
       detail: "Hints aren't available during a \"rate my play\" calibration game",
       code: "hint_refused_calibration"
     })
+  end
+
+  def call(conn, {:error, :undo_refused_calibration}) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{
+      detail: "Takeback isn't available during a \"rate my play\" calibration game",
+      code: "undo_refused_calibration"
+    })
+  end
+
+  def call(conn, {:error, :no_moves_to_undo}) do
+    conn |> put_status(:unprocessable_entity) |> json(%{detail: "No moves to take back yet", code: "no_moves_to_undo"})
+  end
+
+  def call(conn, {:error, :cannot_undo}) do
+    conn |> put_status(:unprocessable_entity) |> json(%{detail: "This game can't be taken back", code: "cannot_undo"})
   end
 
   def call(conn, {:error, :rate_limited}) do

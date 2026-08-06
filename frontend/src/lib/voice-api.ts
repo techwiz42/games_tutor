@@ -14,6 +14,7 @@ export type VoiceSessionEnd = {
   status: string;
   duration_seconds: number;
   estimated_cost_usd: number;
+  total_tokens: number | null;
 };
 
 async function asJson<T>(res: Response): Promise<T> {
@@ -34,7 +35,10 @@ export async function startVoiceSession(gameId: string): Promise<VoiceSessionSta
   return asJson<VoiceSessionStart>(res);
 }
 
-export async function endVoiceSession(sessionId: string): Promise<VoiceSessionEnd> {
-  const res = await apiFetch(`/api/voice/session/${sessionId}/end`, { method: "POST" });
+export async function endVoiceSession(sessionId: string, totalTokens?: number): Promise<VoiceSessionEnd> {
+  const res = await apiFetch(`/api/voice/session/${sessionId}/end`, {
+    method: "POST",
+    body: JSON.stringify(totalTokens != null ? { total_tokens: totalTokens } : {}),
+  });
   return asJson<VoiceSessionEnd>(res);
 }

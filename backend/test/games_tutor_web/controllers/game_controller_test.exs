@@ -54,6 +54,63 @@ defmodule GamesTutorWeb.GameControllerTest do
     assert %{"status" => "resigned", "result" => "black_wins"} = json_response(resign_conn, 200)
   end
 
+  test "choosing Black creates a game with a real White opening move already played", %{conn: conn} do
+    auth = Plug.Conn.get_req_header(conn, "authorization")
+
+    create_conn = post(conn, "/api/games", %{"opponent_elo" => 800, "human_color" => "black"})
+
+    assert %{
+             "id" => id,
+             "human_color" => "black",
+             "moves" => [%{"ply" => 1, "player" => "engine", "uci" => opening_uci}]
+           } = json_response(create_conn, 201)
+
+    assert opening_uci =~ ~r/^[a-h][1-8][a-h][1-8][qrbn]?$/
+
+    # It's genuinely Black's (the human's) turn -- a live reply applies cleanly.
+    move_conn = recycle_conn(auth) |> post("/api/games/#{id}/moves", %{"move" => "e7e5"})
+    assert %{"human_move" => %{"ply" => 2, "player" => "human"}} = json_response(move_conn, 200)
+  end
+
+  test "full HTTP flow: create -> move -> undo restores the pre-move state", %{conn: conn} do
+    auth = Plug.Conn.get_req_header(conn, "authorization")
+
+    create_conn = post(conn, "/api/games", %{"opponent_elo" => 800})
+    %{"id" => id} = json_response(create_conn, 201)
+
+    move_conn = recycle_conn(auth) |> post("/api/games/#{id}/moves", %{"move" => "e2e4"})
+    assert %{"engine_move" => %{"player" => "engine"}} = json_response(move_conn, 200)
+
+    undo_conn = recycle_conn(auth) |> post("/api/games/#{id}/undo")
+    assert %{"status" => "in_progress", "moves" => []} = json_response(undo_conn, 200)
+
+    # The rewound position is genuinely playable again, not just visually reset.
+    replay_conn = recycle_conn(auth) |> post("/api/games/#{id}/moves", %{"move" => "d2d4"})
+    assert %{"human_move" => %{"uci" => "d2d4"}} = json_response(replay_conn, 200)
+  end
+
+  test "undo is refused during a calibration game", %{conn: conn} do
+    auth = Plug.Conn.get_req_header(conn, "authorization")
+
+    create_conn = post(conn, "/api/games", %{"is_calibration" => true})
+    %{"id" => id} = json_response(create_conn, 201)
+
+    recycle_conn(auth) |> post("/api/games/#{id}/moves", %{"move" => "e2e4"})
+
+    undo_conn = recycle_conn(auth) |> post("/api/games/#{id}/undo")
+    assert %{"code" => "undo_refused_calibration"} = json_response(undo_conn, 403)
+  end
+
+  test "undo is refused when there are no moves to take back yet", %{conn: conn} do
+    auth = Plug.Conn.get_req_header(conn, "authorization")
+
+    create_conn = post(conn, "/api/games", %{"opponent_elo" => 800})
+    %{"id" => id} = json_response(create_conn, 201)
+
+    undo_conn = recycle_conn(auth) |> post("/api/games/#{id}/undo")
+    assert %{"code" => "no_moves_to_undo"} = json_response(undo_conn, 422)
+  end
+
   defp recycle_conn(auth_header) do
     Phoenix.ConnTest.build_conn() |> Plug.Conn.put_req_header("authorization", hd(auth_header))
   end

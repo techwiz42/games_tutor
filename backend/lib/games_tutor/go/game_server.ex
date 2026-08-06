@@ -12,9 +12,12 @@ defmodule GamesTutor.Go.GameServer do
   opponent's move choice (low visits, for the same "just search less/more
   randomly" weakening effect as chess's Skill Level).
 
-  Human is always Black (moves first -- the conventional "student" role
-  in a teaching game), engine always White, in v1 -- mirrors the chess
-  GameServer's "human is always White" simplification.
+  Human plays Black by default (moves first -- the conventional "student"
+  role in a teaching game), but can choose White instead (see
+  `maybe_play_opening_move/1`) -- unlike chess, every KataGo query needs an
+  explicit "B"/"W" tag per move (see `query/4`'s `history`), so (unlike
+  `Chess.GameServer`) color threads through `do_submit_human_move/2` and
+  `play_opponent_reply/3` too, not just the opening-move special case.
 
   KataGo is the sole legality authority: every query re-sends the full
   move history, and KataGo rejects illegal moves (including suicide/ko)
@@ -51,15 +54,18 @@ defmodule GamesTutor.Go.GameServer do
   Starts (or returns the existing) GameServer for `game_id`. `history` is
   the ordered list of already-played `["B"|"W", coord]` pairs (empty for
   a brand-new game), for restore after idle-eviction. `opponent_config`
-  is `%{"max_visits" => integer}`.
+  is `%{"max_visits" => integer}`; `human_color` is `"black"` (default) or
+  `"white"`.
   """
-  def ensure_started(game_id, opponent_config, history \\ []) do
+  def ensure_started(game_id, opponent_config, history \\ [], human_color \\ "black") do
     case Registry.lookup(GamesTutor.Games.GameRegistry, {:go, game_id}) do
       [{pid, _}] ->
         {:ok, pid}
 
       [] ->
-        spec = {__MODULE__, game_id: game_id, opponent_config: opponent_config, history: history}
+        spec =
+          {__MODULE__,
+           game_id: game_id, opponent_config: opponent_config, history: history, human_color: human_color}
 
         case DynamicSupervisor.start_child(GamesTutor.Games.GameSupervisor, spec) do
           {:ok, pid} -> {:ok, pid}
@@ -78,6 +84,23 @@ defmodule GamesTutor.Go.GameServer do
   def board_grid(game_id), do: GenServer.call(via(game_id), :board_grid)
   def hint(game_id), do: GenServer.call(via(game_id), :hint)
 
+  @doc """
+  Plays the engine's opening move if (and only if) this is a brand-new game
+  where the human chose to play White. Returns `{:ok, %{engine_move:
+  attrs}}` (persisted by the caller as ply 1) or `{:ok, :not_applicable}`.
+  """
+  def maybe_play_opening_move(game_id), do: GenServer.call(via(game_id), :maybe_play_opening_move, @query_timeout)
+
+  @doc """
+  Takes back to the position implied by `new_history` (a prefix of the previously
+  played `["B"|"W", coord]` list). Unlike chess, this doesn't need to touch the
+  KataGo process at all -- every query already re-sends the full move history from
+  scratch (stateless), so undo is just recomputing local state (`board`,
+  `consecutive_passes`, `next_ply`, `last_analysis`) from the shorter list, the same
+  way `init/1` derives it after an idle-eviction restore.
+  """
+  def undo(game_id, new_history), do: GenServer.call(via(game_id), {:undo, new_history}, @query_timeout)
+
   defp via(game_id), do: {:via, Registry, {GamesTutor.Games.GameRegistry, {:go, game_id}}}
 
   # ---- Server callbacks ----
@@ -87,6 +110,7 @@ defmodule GamesTutor.Go.GameServer do
     game_id = Keyword.fetch!(opts, :game_id)
     opponent_config = Keyword.fetch!(opts, :opponent_config)
     history = Keyword.get(opts, :history, [])
+    human_color = Keyword.get(opts, :human_color, "black")
     katago = Application.fetch_env!(:games_tutor, :katago)
 
     port =
@@ -96,19 +120,14 @@ defmodule GamesTutor.Go.GameServer do
         args: ["analysis", "-config", katago[:config_path], "-model", katago[:model_path]]
       ])
 
-    board =
-      Enum.reduce(history, Board.new(@default_size), fn [color_str, coord_str], b ->
-        {b, _captured} = Board.apply_move(b, color_from_str(color_str), Board.parse_coord(coord_str))
-        b
-      end)
-
     state = %{
       game_id: game_id,
       port: port,
       size: @default_size,
       komi: @default_komi,
       history: history,
-      board: board,
+      board: rebuild_board(history),
+      human_color: human_color,
       next_ply: length(history) + 1,
       consecutive_passes: trailing_pass_count(history),
       resigned: false,
@@ -117,7 +136,7 @@ defmodule GamesTutor.Go.GameServer do
       last_analysis: nil
     }
 
-    {:ok, resp} = query(state, state.history, @analysis_max_visits)
+    {:ok, resp} = query(state, state.history, @analysis_max_visits, :analysis)
     {:ok, %{state | last_analysis: extract_analysis(resp)}, @idle_timeout}
   end
 
@@ -133,7 +152,7 @@ defmodule GamesTutor.Go.GameServer do
   @impl true
   def handle_call(:resign, _from, state) do
     state = %{state | resigned: true}
-    {:reply, {:ok, {:winner, :white, {:manual, :human_resigned}}}, state, @idle_timeout}
+    {:reply, {:ok, {:winner, engine_color_atom(state), {:manual, :human_resigned}}}, state, @idle_timeout}
   end
 
   @impl true
@@ -144,6 +163,34 @@ defmodule GamesTutor.Go.GameServer do
   @impl true
   def handle_call(:hint, _from, state) do
     {:reply, {:ok, state.last_analysis.best_move}, state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_call(:maybe_play_opening_move, _from, %{next_ply: 1, human_color: "white"} = state) do
+    play_opening_engine_move(state)
+  end
+
+  @impl true
+  def handle_call(:maybe_play_opening_move, _from, state) do
+    {:reply, {:ok, :not_applicable}, state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_call({:undo, new_history}, _from, state) do
+    {:ok, resp} = query(state, new_history, @analysis_max_visits, :analysis)
+
+    state = %{
+      state
+      | history: new_history,
+        board: rebuild_board(new_history),
+        consecutive_passes: trailing_pass_count(new_history),
+        next_ply: length(new_history) + 1,
+        resigned: false,
+        last_move_at: System.monotonic_time(:millisecond),
+        last_analysis: extract_analysis(resp)
+    }
+
+    {:reply, :ok, state, @idle_timeout}
   end
 
   @impl true
@@ -173,14 +220,14 @@ defmodule GamesTutor.Go.GameServer do
       coord ->
         eval_before_human = round_centipoints(state.last_analysis.score_lead)
         engine_best_move = state.last_analysis.best_move
-        new_history = state.history ++ [["B", coord_str]]
+        new_history = state.history ++ [[human_color_tag(state), coord_str]]
 
-        case query(state, new_history, @analysis_max_visits) do
+        case query(state, new_history, @analysis_max_visits, :analysis) do
           {:ok, %{"error" => reason}} ->
             {:reply, {:error, {:illegal_move, reason}}, state, @idle_timeout}
 
           {:ok, resp} ->
-            {new_board, _captured} = Board.apply_move(state.board, :black, coord)
+            {new_board, _captured} = Board.apply_move(state.board, human_color_atom(state), coord)
             new_passes = pass_delta(coord_str, state.consecutive_passes)
             analysis = extract_analysis(resp)
             eval_after_human = round_centipoints(-analysis.score_lead)
@@ -220,14 +267,14 @@ defmodule GamesTutor.Go.GameServer do
   end
 
   defp play_opponent_reply(state, human_move, move_started_at) do
-    {:ok, pick_resp} = query(state, state.history, state.opponent_max_visits)
+    {:ok, pick_resp} = query(state, state.history, state.opponent_max_visits, :opponent_move)
     engine_coord_str = (List.first(pick_resp["moveInfos"]) || %{})["move"] || "pass"
     engine_coord = Board.parse_coord(engine_coord_str)
 
-    new_history = state.history ++ [["W", engine_coord_str]]
-    {:ok, eval_resp} = query(state, new_history, @analysis_max_visits)
+    new_history = state.history ++ [[engine_color_tag(state), engine_coord_str]]
+    {:ok, eval_resp} = query(state, new_history, @analysis_max_visits, :analysis)
 
-    {new_board, _captured} = Board.apply_move(state.board, :white, engine_coord)
+    {new_board, _captured} = Board.apply_move(state.board, engine_color_atom(state), engine_coord)
     new_passes = pass_delta(engine_coord_str, state.consecutive_passes)
     analysis = extract_analysis(eval_resp)
 
@@ -264,24 +311,73 @@ defmodule GamesTutor.Go.GameServer do
     {:reply, {:ok, %{status: status, human_move: human_move, engine_move: engine_move}}, state, @idle_timeout}
   end
 
-  ## KataGo protocol
+  # Black moves first in Go -- when the human chose White, the engine (as
+  # Black) must play move 1 itself, against the empty board/history.
+  defp play_opening_engine_move(state) do
+    move_started_at = System.monotonic_time(:millisecond)
+    {:ok, pick_resp} = query(state, [], state.opponent_max_visits, :opponent_move)
+    engine_coord_str = (List.first(pick_resp["moveInfos"]) || %{})["move"] || "pass"
+    engine_coord = Board.parse_coord(engine_coord_str)
 
-  defp query(state, history, max_visits) do
-    id = "q#{System.unique_integer([:positive])}"
+    new_history = [[engine_color_tag(state), engine_coord_str]]
+    {:ok, eval_resp} = query(state, new_history, @analysis_max_visits, :analysis)
 
-    request = %{
-      id: id,
-      moves: history,
-      rules: "tromp-taylor",
-      komi: state.komi,
-      boardXSize: state.size,
-      boardYSize: state.size,
-      analyzeTurns: [length(history)],
-      maxVisits: max_visits
+    {new_board, _captured} = Board.apply_move(state.board, engine_color_atom(state), engine_coord)
+    new_passes = pass_delta(engine_coord_str, 0)
+    analysis = extract_analysis(eval_resp)
+
+    eval_before_engine = round_centipoints(state.last_analysis.score_lead)
+    eval_after_engine = round_centipoints(-analysis.score_lead)
+    loss = max(eval_before_engine - eval_after_engine, 0)
+
+    engine_move = %{
+      ply: 1,
+      player: "engine",
+      notation: engine_coord_str,
+      uci: engine_coord_str,
+      fen_after: board_json(new_board),
+      eval_before: eval_before_engine,
+      eval_after: eval_after_engine,
+      loss: loss,
+      engine_best_move: state.last_analysis.best_move,
+      classification: Atom.to_string(MoveClassifier.classify(loss)),
+      think_time_ms: System.monotonic_time(:millisecond) - move_started_at
     }
 
-    Port.command(state.port, Jason.encode!(request) <> "\n")
-    await_response(state.port, id, "")
+    state = %{
+      state
+      | history: new_history,
+        board: new_board,
+        consecutive_passes: new_passes,
+        next_ply: 2,
+        last_move_at: System.monotonic_time(:millisecond),
+        last_analysis: analysis
+    }
+
+    {:reply, {:ok, %{engine_move: engine_move}}, state, @idle_timeout}
+  end
+
+  ## KataGo protocol
+
+  defp query(state, history, max_visits, kind) do
+    :telemetry.span([:games_tutor, :engine, :query], %{engine: :katago, kind: kind}, fn ->
+      id = "q#{System.unique_integer([:positive])}"
+
+      request = %{
+        id: id,
+        moves: history,
+        rules: "tromp-taylor",
+        komi: state.komi,
+        boardXSize: state.size,
+        boardYSize: state.size,
+        analyzeTurns: [length(history)],
+        maxVisits: max_visits
+      }
+
+      Port.command(state.port, Jason.encode!(request) <> "\n")
+      result = await_response(state.port, id, "")
+      {result, %{engine: :katago, kind: kind}}
+    end)
   end
 
   defp await_response(port, expected_id, buffer) do
@@ -314,6 +410,16 @@ defmodule GamesTutor.Go.GameServer do
 
   ## Helpers
 
+  # Shared by init/1 (fresh/restored game) and the :undo handler (rewound game) --
+  # the local `Board` is only ever derived from a history list, never mutated in
+  # place from a diff, so undo just re-derives it from a shorter list.
+  defp rebuild_board(history) do
+    Enum.reduce(history, Board.new(@default_size), fn [color_str, coord_str], b ->
+      {b, _captured} = Board.apply_move(b, color_from_str(color_str), Board.parse_coord(coord_str))
+      b
+    end)
+  end
+
   defp pass_delta("pass", count), do: count + 1
   defp pass_delta(_coord, _count), do: 0
 
@@ -323,6 +429,12 @@ defmodule GamesTutor.Go.GameServer do
 
   defp color_from_str("B"), do: :black
   defp color_from_str("W"), do: :white
+
+  defp human_color_tag(%{human_color: "black"}), do: "B"
+  defp human_color_tag(%{human_color: "white"}), do: "W"
+  defp engine_color_tag(state), do: if(human_color_tag(state) == "B", do: "W", else: "B")
+  defp human_color_atom(state), do: color_from_str(human_color_tag(state))
+  defp engine_color_atom(state), do: color_from_str(engine_color_tag(state))
 
   # Score-lead points scaled 100x to an integer, matching chess's own
   # centipawns-are-scaled-pawns convention -- keeps the shared `moves`

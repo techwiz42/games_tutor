@@ -56,6 +56,8 @@ defmodule GamesTutor.Voice do
             })
             |> Repo.insert()
 
+          :telemetry.execute([:games_tutor, :voice, :session_started], %{count: 1}, %{mode: mode})
+
           {:ok, %{session: session, ephemeral_key: minted.ephemeral_key, expires_at: minted.expires_at}}
 
         {:error, reason} ->
@@ -65,8 +67,12 @@ defmodule GamesTutor.Voice do
     end
   end
 
-  @doc "Ends an active session, recording duration and a rough cost estimate."
-  def end_session(user, session_id) do
+  @doc """
+  Ends an active session, recording duration, a rough cost estimate, and (if
+  the browser captured any) real OpenAI-reported token usage accumulated
+  across the session's response.done events.
+  """
+  def end_session(user, session_id, total_tokens \\ nil) do
     case Repo.get_by(VoiceSession, id: session_id, user_id: user.id) do
       nil ->
         {:error, :not_found}
@@ -85,11 +91,19 @@ defmodule GamesTutor.Voice do
             status: "ended",
             ended_at: now,
             duration_seconds: duration,
-            estimated_cost_usd: Float.round(cost, 4)
+            estimated_cost_usd: Float.round(cost, 4),
+            total_tokens: total_tokens
           })
           |> Repo.update()
 
         release_active_session_guard(user)
+
+        :telemetry.execute(
+          [:games_tutor, :voice, :session_ended],
+          %{duration_seconds: duration, estimated_cost_usd: cost},
+          %{mode: session.mode}
+        )
+
         {:ok, session}
     end
   end

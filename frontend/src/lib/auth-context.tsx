@@ -11,6 +11,7 @@ export type User = {
   created_at: string;
   has_password: boolean;
   has_google: boolean;
+  is_admin: boolean;
 };
 
 type AuthContextValue = {

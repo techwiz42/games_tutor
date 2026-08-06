@@ -74,6 +74,7 @@ export async function createGame(
     opponentMaxVisits?: number;
     isCalibration?: boolean;
     selfReportedElo?: number;
+    humanColor?: "white" | "black";
   } = {}
 ): Promise<Game> {
   const res = await apiFetch("/api/games", {
@@ -84,6 +85,7 @@ export async function createGame(
       opponent_max_visits: opts.opponentMaxVisits,
       is_calibration: opts.isCalibration ?? false,
       self_reported_elo: opts.selfReportedElo,
+      human_color: opts.humanColor,
     }),
   });
   return asJson<Game>(res);
@@ -110,6 +112,11 @@ export async function submitMove(id: string, uci: string): Promise<MoveResult> {
 
 export async function resignGame(id: string): Promise<Game> {
   const res = await apiFetch(`/api/games/${id}/resign`, { method: "POST" });
+  return asJson<Game>(res);
+}
+
+export async function undoMove(id: string): Promise<Game> {
+  const res = await apiFetch(`/api/games/${id}/undo`, { method: "POST" });
   return asJson<Game>(res);
 }
 

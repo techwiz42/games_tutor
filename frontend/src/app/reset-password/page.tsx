@@ -3,6 +3,7 @@
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { API_URL } from "@/lib/api";
+import { authPageWrap, authCard, authBrand, authTitle, authInput, authButtonPrimary, authLink, authError } from "@/lib/auth-ui";
 
 function ResetPasswordInner() {
   const router = useRouter();
@@ -17,9 +18,16 @@ function ResetPasswordInner() {
 
   if (!token) {
     return (
-      <div style={{ maxWidth: 360, margin: "80px auto", padding: 24 }}>
-        <p style={{ color: "red" }}>Missing reset token.</p>
-        <a href="/forgot-password">Request a new reset link</a>
+      <div className={authPageWrap}>
+        <div className={`${authCard} text-center`}>
+          <div className={authBrand}>games_tutor</div>
+          <div className={authError}>Missing reset token.</div>
+          <p className="mt-4 text-sm">
+            <a href="/forgot-password" className={authLink}>
+              Request a new reset link
+            </a>
+          </p>
+        </div>
       </div>
     );
   }
@@ -53,37 +61,45 @@ function ResetPasswordInner() {
 
   if (success) {
     return (
-      <div style={{ maxWidth: 360, margin: "80px auto", padding: 24, textAlign: "center" }}>
-        <p>Password reset. Taking you to login...</p>
+      <div className={authPageWrap}>
+        <div className={`${authCard} text-center`}>
+          <div className={authBrand}>games_tutor</div>
+          <p className="text-sm text-zinc-600 dark:text-zinc-300">Password reset. Taking you to login...</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div style={{ maxWidth: 360, margin: "80px auto", padding: 24 }}>
-      <h1>Choose a new password</h1>
-      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <input
-          type="password"
-          placeholder="New password (min 8 characters)"
-          minLength={8}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-        />
-        <input
-          type="password"
-          placeholder="Confirm new password"
-          minLength={8}
-          value={confirmPassword}
-          onChange={(e) => setConfirmPassword(e.target.value)}
-          required
-        />
-        {error && <p style={{ color: "red" }}>{error}</p>}
-        <button type="submit" disabled={submitting}>
-          {submitting ? "Resetting..." : "Reset password"}
-        </button>
-      </form>
+    <div className={authPageWrap}>
+      <div className={authCard}>
+        <div className={authBrand}>games_tutor</div>
+        <h1 className={authTitle}>Choose a new password</h1>
+        <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-3">
+          <input
+            type="password"
+            placeholder="New password (min 8 characters)"
+            minLength={8}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className={authInput}
+            required
+          />
+          <input
+            type="password"
+            placeholder="Confirm new password"
+            minLength={8}
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            className={authInput}
+            required
+          />
+          {error && <div className={authError}>{error}</div>}
+          <button type="submit" disabled={submitting} className={authButtonPrimary}>
+            {submitting ? "Resetting..." : "Reset password"}
+          </button>
+        </form>
+      </div>
     </div>
   );
 }

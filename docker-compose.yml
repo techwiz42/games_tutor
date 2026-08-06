@@ -8,7 +8,11 @@ services:
     secrets:
       - postgres_password
     ports:
-      - "5433:5432"
+      # Bound to loopback only -- this droplet has a public IP and nothing
+      # outside this host needs direct DB access (backend reaches postgres
+      # via the internal compose network regardless of this mapping; this
+      # is purely for host-side access, e.g. `mix test` run outside docker).
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -16,16 +20,20 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    mem_limit: 512m
 
   redis:
     image: redis:7
     ports:
-      - "6380:6379"
+      # Loopback only -- unauthenticated Redis with no reason to be
+      # internet-reachable (see postgres's port comment above).
+      - "127.0.0.1:6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10
+    mem_limit: 256m
 
   backend:
     build:
@@ -60,12 +68,20 @@ services:
       - google_client_secret
       - openai_api_key
     ports:
-      - "8000:8000"
+      # Loopback only -- real traffic reaches this via nginx (TLS
+      # termination) or the frontend's internal server-to-server proxy over
+      # the compose network; a public 8000 would expose raw HTTP with auth
+      # tokens in the clear, bypassing nginx entirely.
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # BEAM VM observed steady-state ~2.2GiB on this host; capped with headroom
+    # above that rather than left unbounded (unbounded was a contributor to
+    # the 2026-08-06 host-wide OOM event that also killed unrelated services).
+    mem_limit: 3g
 
   frontend:
     build:
@@ -80,9 +96,13 @@ services:
         # re-reads it (see frontend/Dockerfile's comment).
         BACKEND_INTERNAL_URL: http://backend:8000
     ports:
-      - "3020:3000"
+      # Loopback only -- nginx (see /etc/nginx/sites-available/games.cyberiad.ai)
+      # proxies to 127.0.0.1:3020 for TLS termination; a public 3020 would
+      # let anyone bypass HTTPS entirely.
+      - "127.0.0.1:3020:3000"
     depends_on:
       - backend
+    mem_limit: 512m
 
 secrets:
   postgres_password:

@@ -1,0 +1,29 @@
+# Production overrides for the games.cyberiad.ai deployment. Layer on top of
+# the base compose file rather than duplicating it:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Only what actually differs from local dev lives here: the real public
+# hostname (base file defaults to localhost, which is correct for a portable
+# dev/docker-compose setup but wrong for the live domain -- see
+# docker-compose.yml's PUBLIC_BASE_URL/FRONTEND_BASE_URL comments) and a
+# restart policy so containers come back after a host reboot or crash.
+# Compose merges `environment:` maps by key, so this only touches the three
+# keys listed below -- everything else (DB_HOST, secrets, etc.) still comes
+# from the base file.
+services:
+  postgres:
+    restart: unless-stopped
+
+  redis:
+    restart: unless-stopped
+
+  backend:
+    restart: unless-stopped
+    environment:
+      PHX_HOST: games.cyberiad.ai
+      PUBLIC_BASE_URL: https://games.cyberiad.ai
+      FRONTEND_BASE_URL: https://games.cyberiad.ai
+
+  frontend:
+    restart: unless-stopped

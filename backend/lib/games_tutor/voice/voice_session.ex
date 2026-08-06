@@ -30,6 +30,11 @@ defmodule GamesTutor.Voice.VoiceSession do
     field :ended_at, :utc_datetime
     field :duration_seconds, :integer
     field :estimated_cost_usd, :float
+    # Real OpenAI Realtime API usage, accumulated client-side from
+    # response.done events across the session (see
+    # use-realtime-voice-session.ts) -- nil for sessions ended before this
+    # was added, or if the browser never saw a usage field to accumulate.
+    field :total_tokens, :integer
 
     timestamps(type: :utc_datetime)
   end
@@ -45,7 +50,7 @@ defmodule GamesTutor.Voice.VoiceSession do
 
   def end_changeset(session, attrs) do
     session
-    |> cast(attrs, [:status, :ended_at, :duration_seconds, :estimated_cost_usd])
+    |> cast(attrs, [:status, :ended_at, :duration_seconds, :estimated_cost_usd, :total_tokens])
     |> validate_required([:status, :ended_at, :duration_seconds, :estimated_cost_usd])
     |> validate_inclusion(:status, @statuses)
   end

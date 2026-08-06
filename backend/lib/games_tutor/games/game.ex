@@ -15,6 +15,7 @@ defmodule GamesTutor.Games.Game do
   @game_types ~w(chess go)
   @statuses ~w(in_progress checkmate stalemate draw scored resigned aborted)
   @results ~w(white_wins black_wins draw)
+  @human_colors ~w(white black)
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -26,6 +27,10 @@ defmodule GamesTutor.Games.Game do
     field :result, :string
     field :is_calibration, :boolean, default: false
     field :opponent_engine_config, :map, default: %{}
+    # Which board color the human plays -- "white" in chess, "black" in Go
+    # by default, but now a real per-game choice (see GamesTutor.Games's
+    # create_game/2) rather than a hardcoded-by-game_type assumption.
+    field :human_color, :string
     field :record, :string
     field :started_at, :utc_datetime
     field :ended_at, :utc_datetime
@@ -42,10 +47,12 @@ defmodule GamesTutor.Games.Game do
       :game_type,
       :is_calibration,
       :opponent_engine_config,
+      :human_color,
       :started_at
     ])
-    |> validate_required([:user_id, :game_type, :started_at])
+    |> validate_required([:user_id, :game_type, :human_color, :started_at])
     |> validate_inclusion(:game_type, @game_types)
+    |> validate_inclusion(:human_color, @human_colors)
     |> foreign_key_constraint(:user_id)
   end
 
@@ -59,6 +66,16 @@ defmodule GamesTutor.Games.Game do
 
   def record_changeset(game, attrs) do
     cast(game, attrs, [:record])
+  end
+
+  @doc """
+  Reverts a finished game back to in_progress -- used by `GamesTutor.Games.undo_move/2`
+  when the move(s) being taken back are what ended the game (e.g. undoing a checkmate).
+  Deliberately bypasses `finish_changeset/2`'s `validate_required([:status, :ended_at])`,
+  which exists to make *ending* a game strict, not to block *un*-ending one.
+  """
+  def reopen_changeset(game) do
+    change(game, status: "in_progress", result: nil, ended_at: nil)
   end
 
   def game_types, do: @game_types

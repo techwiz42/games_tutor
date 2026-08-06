@@ -48,6 +48,12 @@ defmodule GamesTutorWeb.GameController do
     end
   end
 
+  def undo(conn, %{"id" => id}) do
+    with {:ok, game} <- Games.undo_move(current_user(conn), id) do
+      json(conn, GamesTutorWeb.GameJSON.show(game))
+    end
+  end
+
   ## Voice tool endpoints
 
   def board_state(conn, %{"id" => id}) do

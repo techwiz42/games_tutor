@@ -7,6 +7,11 @@ defmodule GamesTutorWeb.Router do
 
   pipeline :authenticated do
     plug GamesTutorWeb.AuthPipeline
+    plug GamesTutorWeb.RejectBanned
+  end
+
+  pipeline :admin do
+    plug GamesTutorWeb.RequireAdmin
   end
 
   scope "/api/auth", GamesTutorWeb do
@@ -38,6 +43,7 @@ defmodule GamesTutorWeb.Router do
     get "/:id", GameController, :show
     post "/:id/moves", GameController, :create_move
     post "/:id/resign", GameController, :resign
+    post "/:id/undo", GameController, :undo
     get "/:id/board-state", GameController, :board_state
     get "/:id/move-analysis", GameController, :move_analysis
     post "/:id/hint", GameController, :hint
@@ -61,6 +67,13 @@ defmodule GamesTutorWeb.Router do
 
     post "/session", VoiceController, :create
     post "/session/:id/end", VoiceController, :end_session
+  end
+
+  scope "/api/admin", GamesTutorWeb do
+    pipe_through [:api, :authenticated, :admin]
+
+    get "/users", AdminController, :index
+    post "/users/:id/ban", AdminController, :ban
   end
 
   scope "/api", GamesTutorWeb do

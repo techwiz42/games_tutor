@@ -65,6 +65,23 @@ defmodule GamesTutorWeb.GoGameControllerTest do
     assert %{"status" => "resigned", "result" => "white_wins", "human_color" => "black"} = json_response(resign_conn, 200)
   end
 
+  test "choosing White creates a Go game with a real Black opening move already played", %{conn: conn} do
+    create_conn =
+      post(conn, "/api/games", %{"game_type" => "go", "opponent_max_visits" => 10, "human_color" => "white"})
+
+    assert %{
+             "id" => id,
+             "human_color" => "white",
+             "moves" => [%{"ply" => 1, "player" => "engine", "uci" => opening_uci}]
+           } = json_response(create_conn, 201)
+
+    assert opening_uci == "pass" or opening_uci =~ ~r/^[A-Za-z]\d{1,2}$/
+
+    # It's genuinely White's (the human's) turn -- a live reply applies cleanly.
+    move_conn = fresh_conn(conn) |> post("/api/games/#{id}/moves", %{"move" => "E5"})
+    assert %{"human_move" => %{"ply" => 2, "player" => "human"}} = json_response(move_conn, 200)
+  end
+
   test "hint is hard-refused for a Go calibration game", %{conn: conn} do
     create_conn = post(conn, "/api/games", %{"game_type" => "go", "is_calibration" => true})
     %{"id" => id} = json_response(create_conn, 201)

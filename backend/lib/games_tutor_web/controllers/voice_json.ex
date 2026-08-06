@@ -17,7 +17,8 @@ defmodule GamesTutorWeb.VoiceJSON do
       session_id: session.id,
       status: session.status,
       duration_seconds: session.duration_seconds,
-      estimated_cost_usd: session.estimated_cost_usd
+      estimated_cost_usd: session.estimated_cost_usd,
+      total_tokens: session.total_tokens
     }
   end
 end

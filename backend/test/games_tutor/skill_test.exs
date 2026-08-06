@@ -19,6 +19,7 @@ defmodule GamesTutor.SkillTest do
         user_id: user.id,
         game_type: game_type,
         is_calibration: true,
+        human_color: if(game_type == "go", do: "black", else: "white"),
         started_at: DateTime.utc_now() |> DateTime.truncate(:second)
       })
       |> Repo.insert()

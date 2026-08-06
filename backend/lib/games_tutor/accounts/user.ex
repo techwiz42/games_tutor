@@ -19,6 +19,10 @@ defmodule GamesTutor.Accounts.User do
     field :avatar_url, :string
     field :confirmed_at, :utc_datetime
     field :last_login_at, :utc_datetime
+    field :last_login_ip, :string
+    field :is_admin, :boolean, default: false
+    field :banned_at, :utc_datetime
+    field :ban_reason, :string
 
     timestamps(type: :utc_datetime)
   end
@@ -54,8 +58,16 @@ defmodule GamesTutor.Accounts.User do
     change(user, confirmed_at: DateTime.utc_now() |> DateTime.truncate(:second))
   end
 
-  def last_login_changeset(user) do
-    change(user, last_login_at: DateTime.utc_now() |> DateTime.truncate(:second))
+  def last_login_changeset(user, ip \\ nil) do
+    change(user, last_login_at: DateTime.utc_now() |> DateTime.truncate(:second), last_login_ip: ip)
+  end
+
+  @doc "Bans an account: reason is required -- it's what gets emailed to the user."
+  def ban_changeset(user, reason) do
+    user
+    |> change(banned_at: DateTime.utc_now() |> DateTime.truncate(:second), ban_reason: reason)
+    |> validate_required([:ban_reason])
+    |> validate_length(:ban_reason, min: 1, max: 2000)
   end
 
   @doc "Used by both registration and password reset."
@@ -106,4 +118,7 @@ defmodule GamesTutor.Accounts.User do
 
   def confirmed?(%__MODULE__{confirmed_at: nil}), do: false
   def confirmed?(%__MODULE__{}), do: true
+
+  def banned?(%__MODULE__{banned_at: nil}), do: false
+  def banned?(%__MODULE__{}), do: true
 end

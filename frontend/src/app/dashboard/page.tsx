@@ -2,19 +2,67 @@
 
 import { ProtectedRoute } from "@/lib/protected-route";
 import { useAuth } from "@/lib/auth-context";
+import { pageWrap, navBar, navBrand, navBrandAccent, card, buttonPrimary, buttonSecondary, mutedText, linkButton } from "@/lib/auth-ui";
+
+function accountLabel(user: { has_password?: boolean; has_google?: boolean }): string {
+  if (user.has_password && user.has_google) return "Password + Google";
+  if (user.has_google) return "Google";
+  if (user.has_password) return "Password";
+  return "";
+}
 
 function DashboardContent() {
   const { user, logout } = useAuth();
 
   return (
-    <div style={{ padding: 24 }}>
-      <h1>games_tutor</h1>
-      <p>Signed in as {user?.email} {user?.display_name ? `(${user.display_name})` : ""}</p>
-      <p>Account: {user?.has_password ? "password" : ""}{user?.has_password && user?.has_google ? " + " : ""}{user?.has_google ? "Google" : ""}</p>
-      <p>
-        <a href="/games">Play chess</a>
-      </p>
-      <button onClick={logout}>Log out</button>
+    <div className={pageWrap}>
+      <header className={navBar}>
+        <span className={navBrand}>
+          games<span className={navBrandAccent}>_tutor</span>
+        </span>
+        <button onClick={logout} className={buttonSecondary}>
+          Log out
+        </button>
+      </header>
+
+      <main className="max-w-5xl mx-auto grid gap-6 sm:grid-cols-2">
+        <section className={`${card} sm:col-span-2`}>
+          <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50">
+            Welcome back{user?.display_name ? `, ${user.display_name}` : ""}
+          </h1>
+          <p className={`${mutedText} mt-1`}>Signed in as {user?.email}</p>
+          <div className="flex gap-3 mt-5">
+            <a href="/games" className={buttonPrimary}>
+              Play now
+            </a>
+            {user?.is_admin && (
+              <a href="/admin" className={buttonSecondary}>
+                Admin
+              </a>
+            )}
+          </div>
+        </section>
+
+        <section className={card}>
+          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50 mb-2">Account</h2>
+          <p className={mutedText}>{accountLabel(user ?? {})}</p>
+        </section>
+
+        <section className={card}>
+          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50 mb-2">Links</h2>
+          <div className="flex flex-col gap-1 items-start">
+            <a href="/attribution" className={linkButton}>
+              Attribution
+            </a>
+            <a href="/terms" className={linkButton}>
+              Terms
+            </a>
+            <a href="/privacy" className={linkButton}>
+              Privacy
+            </a>
+          </div>
+        </section>
+      </main>
     </div>
   );
 }

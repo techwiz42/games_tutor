@@ -16,8 +16,13 @@ defmodule GamesTutorWeb.VoiceController do
 
   def create(_conn, _params), do: {:error, :bad_request}
 
-  def end_session(conn, %{"id" => id}) do
-    with {:ok, session} <- Voice.end_session(current_user(conn), id) do
+  def end_session(conn, %{"id" => id} = params) do
+    total_tokens = case params["total_tokens"] do
+      n when is_integer(n) -> n
+      _ -> nil
+    end
+
+    with {:ok, session} <- Voice.end_session(current_user(conn), id, total_tokens) do
       json(conn, GamesTutorWeb.VoiceJSON.ended(session))
     end
   end

@@ -1,12 +1,28 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { startVoiceSession, endVoiceSession } from "./voice-api";
 import { getBoardState, getMoveAnalysis, requestHint, updateExplanationDepth, listSkillProfiles } from "./games-api";
 
 export type VoiceStatus = "idle" | "requesting-permission" | "connecting" | "connected" | "ended" | "error";
 
 export type TranscriptEntry = { role: "assistant"; text: string };
+
+// dcRef.current flips to "open" slightly after `status` becomes "connected"
+// (WebRTC data-channel negotiation, not gated on anything this hook awaits) --
+// askAboutMove can be called right after a cold `connect()`, so it polls the
+// ref (always current) rather than trusting a possibly-stale `status` closure.
+function waitForOpenChannel(dcRef: { current: RTCDataChannel | null }, timeoutMs = 5000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const check = () => {
+      if (dcRef.current?.readyState === "open") return resolve(true);
+      if (Date.now() - startedAt > timeoutMs) return resolve(false);
+      setTimeout(check, 100);
+    };
+    check();
+  });
+}
 
 /**
  * Real-time voice tutor over WebRTC (OpenAI Realtime API), following the
@@ -34,6 +50,10 @@ export function useRealtimeVoiceSession(gameId: string) {
   const maxDurationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentUtteranceRef = useRef("");
   const audioElRef = useRef<HTMLAudioElement | null>(null);
+  // Real OpenAI-reported usage, accumulated across every response.done event
+  // this session sees -- never fabricated; a field this app can't parse just
+  // isn't counted (see handleDataChannelMessage's response.done case).
+  const totalTokensRef = useRef(0);
 
   const callTool = useCallback(
     async (name: string, args: Record<string, unknown>): Promise<object> => {
@@ -95,7 +115,17 @@ export function useRealtimeVoiceSession(gameId: string) {
             currentUtteranceRef.current = "";
           }
 
-          const response = event.response as { output?: Array<Record<string, unknown>> };
+          const response = event.response as { output?: Array<Record<string, unknown>>; usage?: { total_tokens?: unknown } };
+
+          // Defensive: this app has never captured Realtime API usage before,
+          // and the exact response.usage shape isn't verified against live
+          // OpenAI docs here -- only count it if it's genuinely a number,
+          // never guess/fabricate a figure.
+          const usageTokens = response?.usage?.total_tokens;
+          if (typeof usageTokens === "number") {
+            totalTokensRef.current += usageTokens;
+          }
+
           for (const item of response?.output ?? []) {
             if (item.type === "function_call") {
               const callId = item.call_id as string;
@@ -134,18 +164,38 @@ export function useRealtimeVoiceSession(gameId: string) {
     const sessionId = sessionIdRef.current;
     sessionIdRef.current = null;
     if (sessionId) {
-      await endVoiceSession(sessionId).catch(() => {
+      await endVoiceSession(sessionId, totalTokensRef.current || undefined).catch(() => {
         // Best-effort -- the session's Redis guard has its own TTL safety net.
       });
     }
+    totalTokensRef.current = 0;
     setStatus("ended");
     setIsAssistantSpeaking(false);
     setIsUserSpeaking(false);
   }, [cleanup]);
 
+  // Without this, navigating away from the game page (e.g. to start a new
+  // game) while a voice session is still connected -- the game just ended,
+  // say -- never calls endVoiceSession: the per-user "one active session"
+  // Redis guard and the VoiceSession DB row are then only released by the
+  // 15-minute safety-net TTL, not immediately, blocking a new session on
+  // any game until it expires. Mirrors disconnect()'s teardown, but
+  // imperative-only (no setState -- the component is unmounting).
+  useEffect(() => {
+    return () => {
+      cleanup();
+      if (sessionIdRef.current) {
+        endVoiceSession(sessionIdRef.current, totalTokensRef.current || undefined).catch(() => {
+          // Best-effort -- the session's Redis guard has its own TTL safety net.
+        });
+      }
+    };
+  }, [cleanup]);
+
   const connect = useCallback(async () => {
     setError(null);
     setTranscript([]);
+    totalTokensRef.current = 0;
     setStatus("requesting-permission");
 
     let stream: MediaStream;
@@ -220,14 +270,38 @@ export function useRealtimeVoiceSession(gameId: string) {
     }, sessionStart.max_session_seconds * 1000);
   }, [gameId, handleDataChannelMessage, cleanup, disconnect]);
 
+  // The sole way a session starts -- there's no general-purpose "start voice
+  // tutor" entry point, only this: auto-connects (mic permission prompt and
+  // all) if no session is live yet, so "Ask tutor why" works as a single
+  // click from a cold state, then asks over the data channel, mirroring the
+  // exact conversation.item.create + response.create shape already used for
+  // tool-call results above.
+  const askAboutMove = useCallback(
+    async (text: string) => {
+      if (dcRef.current?.readyState !== "open") {
+        await connect();
+        if (!(await waitForOpenChannel(dcRef))) return;
+      }
+
+      dcRef.current?.send(
+        JSON.stringify({
+          type: "conversation.item.create",
+          item: { type: "message", role: "user", content: [{ type: "input_text", text }] },
+        })
+      );
+      dcRef.current?.send(JSON.stringify({ type: "response.create" }));
+    },
+    [connect]
+  );
+
   return {
     status,
     error,
     transcript,
     isAssistantSpeaking,
     isUserSpeaking,
-    connect,
     disconnect,
+    askAboutMove,
     audioElRef,
   };
 }

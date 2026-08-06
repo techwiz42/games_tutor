@@ -5,8 +5,12 @@ defmodule GamesTutor.Chess.GameServer do
   used for move-quality analysis) and `opp_pid` is a separate,
   skill-limited engine used only to generate the opponent's replies.
 
-  Human is always White, engine always Black, in v1 -- no color choice yet
-  (not required by the plan's Phase 2 scope; straightforward to add later).
+  Human plays White by default, but can choose Black instead (see
+  `maybe_play_opening_move/1`) -- either way, `do_submit_human_move/2` and
+  `play_opponent_reply/4` need no color-specific logic at all, since binbo
+  tracks whose turn it actually is from the real board position; games_tutor
+  only needs to know which literal color is "the human" for the one moment
+  color actually matters -- whether the engine must open the game.
 
   Evaluation is threaded through as exactly one Stockfish analysis call per
   ply, not per side: `last_analysis` is the analysis of the *current*
@@ -44,15 +48,18 @@ defmodule GamesTutor.Chess.GameServer do
   `moves` is the ordered list of already-played `uci` strings (empty for a
   brand-new game) used to replay/restore board state after this process was
   idle-evicted; `opponent_config` is `%{"elo" => integer}` or
-  `%{"skill_level" => integer}`.
+  `%{"skill_level" => integer}`; `human_color` is `"white"` (default) or
+  `"black"`.
   """
-  def ensure_started(game_id, opponent_config, moves \\ []) do
+  def ensure_started(game_id, opponent_config, moves \\ [], human_color \\ "white") do
     case Registry.lookup(GamesTutor.Games.GameRegistry, game_id) do
       [{pid, _}] ->
         {:ok, pid}
 
       [] ->
-        spec = {__MODULE__, game_id: game_id, opponent_config: opponent_config, moves: moves}
+        spec =
+          {__MODULE__,
+           game_id: game_id, opponent_config: opponent_config, moves: moves, human_color: human_color}
 
         case DynamicSupervisor.start_child(GamesTutor.Games.GameSupervisor, spec) do
           {:ok, pid} -> {:ok, pid}
@@ -85,6 +92,23 @@ defmodule GamesTutor.Chess.GameServer do
   """
   def hint(game_id), do: GenServer.call(via(game_id), :hint)
 
+  @doc """
+  Plays the engine's opening move if (and only if) this is a brand-new game
+  where the human chose to play second. Returns `{:ok, %{engine_move:
+  attrs}}` (persisted by the caller as ply 1, same as any other move) or
+  `{:ok, :not_applicable}`. Safe to call unconditionally/idempotently --
+  only acts while `next_ply` is still 1.
+  """
+  def maybe_play_opening_move(game_id), do: GenServer.call(via(game_id), :maybe_play_opening_move, 20_000)
+
+  @doc """
+  Takes back to the position implied by `new_moves` (a prefix of the previously
+  played `uci` list) -- stops and rebuilds both Stockfish subprocesses from scratch
+  and replays `new_moves` into them, the same engine-startup path `init/1` uses, so
+  there's no separate "undo" logic to keep in sync with normal game setup.
+  """
+  def undo(game_id, new_moves), do: GenServer.call(via(game_id), {:undo, new_moves}, 20_000)
+
   defp via(game_id), do: {:via, Registry, {GamesTutor.Games.GameRegistry, game_id}}
 
   # ---- Server callbacks ----
@@ -94,8 +118,31 @@ defmodule GamesTutor.Chess.GameServer do
     game_id = Keyword.fetch!(opts, :game_id)
     opponent_config = Keyword.fetch!(opts, :opponent_config)
     moves = Keyword.get(opts, :moves, [])
+    human_color = Keyword.get(opts, :human_color, "white")
     stockfish_path = Application.fetch_env!(:games_tutor, :stockfish_path)
 
+    {board_pid, opp_pid, last_analysis} = start_engines(moves, opponent_config, stockfish_path)
+
+    state = %{
+      game_id: game_id,
+      board_pid: board_pid,
+      opp_pid: opp_pid,
+      opponent_config: opponent_config,
+      stockfish_path: stockfish_path,
+      human_color: human_color,
+      next_ply: length(moves) + 1,
+      last_move_at: System.monotonic_time(:millisecond),
+      last_analysis: last_analysis
+    }
+
+    {:ok, state, @idle_timeout}
+  end
+
+  # Shared by init/1 (fresh/restored game) and the :undo handler (rewound game) --
+  # spinning up two fresh Stockfish subprocesses and replaying `moves` into the
+  # board one is the one true "give me a position" path; undo just calls it again
+  # with a shorter list rather than trying to reverse-apply anything.
+  defp start_engines(moves, opponent_config, stockfish_path) do
     {:ok, board_pid} = :binbo.new_server()
     {:ok, _status} = :binbo.new_uci_game(board_pid, %{engine_path: stockfish_path})
     :binbo.set_uci_handler(board_pid, uci_handler())
@@ -110,16 +157,7 @@ defmodule GamesTutor.Chess.GameServer do
     {:ok, _status} = :binbo.new_uci_game(opp_pid, %{engine_path: stockfish_path})
     configure_opponent_strength(opp_pid, opponent_config)
 
-    state = %{
-      game_id: game_id,
-      board_pid: board_pid,
-      opp_pid: opp_pid,
-      next_ply: length(moves) + 1,
-      last_move_at: System.monotonic_time(:millisecond),
-      last_analysis: analyze(board_pid)
-    }
-
-    {:ok, state, @idle_timeout}
+    {board_pid, opp_pid, analyze(board_pid)}
   end
 
   @impl true
@@ -135,7 +173,7 @@ defmodule GamesTutor.Chess.GameServer do
 
   @impl true
   def handle_call(:resign, _from, state) do
-    case :binbo.set_game_winner(state.board_pid, :black, :human_resigned) do
+    case :binbo.set_game_winner(state.board_pid, engine_color(state), :human_resigned) do
       :ok ->
         {:ok, status} = :binbo.game_status(state.board_pid)
         {:reply, {:ok, status}, state, @idle_timeout}
@@ -154,6 +192,35 @@ defmodule GamesTutor.Chess.GameServer do
   @impl true
   def handle_call(:hint, _from, state) do
     {:reply, {:ok, state.last_analysis.bestmove}, state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_call(:maybe_play_opening_move, _from, %{next_ply: 1, human_color: "black"} = state) do
+    play_opening_engine_move(state)
+  end
+
+  @impl true
+  def handle_call(:maybe_play_opening_move, _from, state) do
+    {:reply, {:ok, :not_applicable}, state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_call({:undo, new_moves}, _from, state) do
+    :binbo.stop_server(state.board_pid)
+    :binbo.stop_server(state.opp_pid)
+
+    {board_pid, opp_pid, last_analysis} = start_engines(new_moves, state.opponent_config, state.stockfish_path)
+
+    state = %{
+      state
+      | board_pid: board_pid,
+        opp_pid: opp_pid,
+        next_ply: length(new_moves) + 1,
+        last_move_at: System.monotonic_time(:millisecond),
+        last_analysis: last_analysis
+    }
+
+    {:reply, :ok, state, @idle_timeout}
   end
 
   @impl true
@@ -229,7 +296,12 @@ defmodule GamesTutor.Chess.GameServer do
   defp play_opponent_reply(state, human_move, human_analysis, move_started_at) do
     :binbo.uci_set_position(state.opp_pid, human_move.fen_after)
     :binbo.uci_sync_position(state.opp_pid)
-    {:ok, engine_uci} = :binbo.uci_bestmove(state.opp_pid, %{movetime: @opponent_movetime})
+
+    {:ok, engine_uci} =
+      :telemetry.span([:games_tutor, :engine, :query], %{engine: :stockfish, kind: :opponent_move}, fn ->
+        result = :binbo.uci_bestmove(state.opp_pid, %{movetime: @opponent_movetime})
+        {result, %{engine: :stockfish, kind: :opponent_move}}
+      end)
 
     {:ok, status} = :binbo.move(state.board_pid, engine_uci)
     {:ok, fen_after} = :binbo.get_fen(state.board_pid)
@@ -276,12 +348,59 @@ defmodule GamesTutor.Chess.GameServer do
     {:reply, {:ok, %{status: status, human_move: human_move, engine_move: engine_move}}, state, @idle_timeout}
   end
 
+  # White moves first in real chess -- when the human chose Black, the
+  # engine must play move 1 itself, from opp_pid's already-correct starting
+  # position (freshly initialized in init/1, no moves applied yet).
+  defp play_opening_engine_move(state) do
+    move_started_at = System.monotonic_time(:millisecond)
+    eval_before_engine = UciInfo.to_centipawns(state.last_analysis.score)
+
+    {:ok, engine_uci} =
+      :telemetry.span([:games_tutor, :engine, :query], %{engine: :stockfish, kind: :opponent_move}, fn ->
+        result = :binbo.uci_bestmove(state.opp_pid, %{movetime: @opponent_movetime})
+        {result, %{engine: :stockfish, kind: :opponent_move}}
+      end)
+
+    {:ok, :continue} = :binbo.move(state.board_pid, engine_uci)
+    {:ok, fen_after} = :binbo.get_fen(state.board_pid)
+
+    :binbo.uci_sync_position(state.board_pid)
+    next_analysis = analyze(state.board_pid)
+    eval_after_engine = -UciInfo.to_centipawns(next_analysis.score)
+    loss = max(eval_before_engine - eval_after_engine, 0)
+
+    engine_move = %{
+      ply: 1,
+      player: "engine",
+      notation: engine_uci,
+      uci: engine_uci,
+      fen_after: fen_after,
+      eval_before: eval_before_engine,
+      eval_after: eval_after_engine,
+      loss: loss,
+      engine_best_move: state.last_analysis.bestmove,
+      classification: Atom.to_string(MoveClassifier.classify(loss)),
+      think_time_ms: System.monotonic_time(:millisecond) - move_started_at
+    }
+
+    state = %{
+      state
+      | next_ply: 2,
+        last_move_at: System.monotonic_time(:millisecond),
+        last_analysis: next_analysis
+    }
+
+    {:reply, {:ok, %{engine_move: engine_move}}, state, @idle_timeout}
+  end
+
   # ---- Engine helpers ----
 
   defp analyze(board_pid) do
-    {:ok, bestmove} = :binbo.uci_bestmove(board_pid, %{depth: @analysis_depth})
-    score = drain_uci_score() || {:cp, 0}
-    %{score: score, bestmove: bestmove}
+    :telemetry.span([:games_tutor, :engine, :query], %{engine: :stockfish, kind: :analysis}, fn ->
+      {:ok, bestmove} = :binbo.uci_bestmove(board_pid, %{depth: @analysis_depth})
+      score = drain_uci_score() || {:cp, 0}
+      {%{score: score, bestmove: bestmove}, %{engine: :stockfish, kind: :analysis}}
+    end)
   end
 
   # binbo delivers "info ..." lines to our mailbox asynchronously as the
@@ -327,4 +446,7 @@ defmodule GamesTutor.Chess.GameServer do
   end
 
   defp clamp(n, min, max), do: n |> Kernel.max(min) |> Kernel.min(max)
+
+  defp engine_color(%{human_color: "black"}), do: :white
+  defp engine_color(%{human_color: "white"}), do: :black
 end

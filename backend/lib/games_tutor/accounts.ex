@@ -39,13 +39,16 @@ defmodule GamesTutor.Accounts do
   end
 
   @doc "Returns {:ok, user} on success, or {:error, reason} where reason is
-  :invalid_credentials or :not_confirmed."
-  def authenticate_user(email, password) do
+  :invalid_credentials, :not_confirmed, or :banned."
+  def authenticate_user(email, password, ip \\ nil) do
     user = get_user_by_email(email)
 
     cond do
+      user && User.valid_password?(user, password) && User.banned?(user) ->
+        {:error, :banned}
+
       user && User.valid_password?(user, password) && User.confirmed?(user) ->
-        {:ok, record_login(user)}
+        {:ok, record_login(user, ip)}
 
       user && User.valid_password?(user, password) ->
         {:error, :not_confirmed}
@@ -56,8 +59,8 @@ defmodule GamesTutor.Accounts do
     end
   end
 
-  defp record_login(user) do
-    {:ok, user} = user |> User.last_login_changeset() |> Repo.update()
+  defp record_login(user, ip) do
+    {:ok, user} = user |> User.last_login_changeset(ip) |> Repo.update()
     user
   end
 
@@ -191,18 +194,22 @@ defmodule GamesTutor.Accounts do
   for a separate confirmation email. Links to an existing password account
   with the same email if one exists, rather than creating a duplicate.
   """
-  def find_or_create_from_google(%{"sub" => sub, "email" => email} = claims) do
+  def find_or_create_from_google(%{"sub" => sub, "email" => email} = claims, ip \\ nil) do
     cond do
       user = get_user_by_google_id(sub) ->
-        {:ok, record_login(user)}
+        if User.banned?(user), do: {:error, :banned}, else: {:ok, record_login(user, ip)}
 
       user = get_user_by_email(email) ->
-        user
-        |> User.link_google_changeset(%{google_id: sub, avatar_url: claims["picture"]})
-        |> Repo.update()
-        |> case do
-          {:ok, user} -> {:ok, auto_confirm_if_needed(user) |> record_login()}
-          error -> error
+        if User.banned?(user) do
+          {:error, :banned}
+        else
+          user
+          |> User.link_google_changeset(%{google_id: sub, avatar_url: claims["picture"]})
+          |> Repo.update()
+          |> case do
+            {:ok, user} -> {:ok, auto_confirm_if_needed(user) |> record_login(ip)}
+            error -> error
+          end
         end
 
       true ->
@@ -215,7 +222,7 @@ defmodule GamesTutor.Accounts do
         })
         |> Repo.update()
         |> case do
-          {:ok, user} -> {:ok, auto_confirm_if_needed(user) |> record_login()}
+          {:ok, user} -> {:ok, auto_confirm_if_needed(user) |> record_login(ip)}
           error -> error
         end
     end
@@ -227,6 +234,36 @@ defmodule GamesTutor.Accounts do
   end
 
   defp auto_confirm_if_needed(user), do: user
+
+  ## Moderation
+
+  @doc """
+  Bans an account: persists the ban + reason, revokes every active refresh
+  token (mirrors reset_password/2's "end every other session" behavior --
+  see revoke_all_refresh_tokens/1), and emails the user the reason plus
+  appeal instructions. Already-issued access tokens are cut off on their very
+  next request by GamesTutorWeb.RejectBanned, not by anything here.
+
+  Returns {:ok, user} or {:error, changeset} (a blank reason). Email delivery
+  failure is logged, not raised -- a ban must still take effect even if
+  SendGrid is down.
+  """
+  def ban_user(user, reason) do
+    with {:ok, banned_user} <- user |> User.ban_changeset(reason) |> Repo.update() do
+      revoke_all_refresh_tokens(banned_user.id)
+
+      case GamesTutor.Emails.account_banned_email(banned_user) |> Mailer.deliver() do
+        {:ok, _} ->
+          :ok
+
+        {:error, reason} ->
+          require Logger
+          Logger.error("Ban notification email delivery failed: #{inspect(reason)}")
+      end
+
+      {:ok, banned_user}
+    end
+  end
 
   ## Refresh tokens (sessions)
 
