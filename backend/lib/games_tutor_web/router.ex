@@ -40,6 +40,12 @@ defmodule GamesTutorWeb.Router do
     post "/:id/resign", GameController, :resign
   end
 
+  scope "/api/skill-profiles", GamesTutorWeb do
+    pipe_through [:api, :authenticated]
+
+    get "/", SkillProfileController, :index
+  end
+
   scope "/api", GamesTutorWeb do
     pipe_through :api
 

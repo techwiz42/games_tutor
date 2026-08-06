@@ -16,21 +16,33 @@ defmodule GamesTutorWeb.GameJSON do
   end
 
   @doc "For the single-game view -- includes the full move list and current position."
-  def show(game) do
+  def show(game, skill_profile \\ nil) do
     game
     |> summary()
     |> Map.merge(%{
       fen: Games.current_fen(game),
-      moves: Enum.map(game.moves, &move/1)
+      moves: Enum.map(game.moves, &move/1),
+      skill_profile: skill_profile && skill_profile(skill_profile)
     })
   end
 
-  def move_result(%{game: game, human_move: human_move, engine_move: engine_move}) do
+  def move_result(%{game: game, human_move: human_move, engine_move: engine_move, skill_profile: skill_profile}) do
     %{
       game: summary(game),
       fen: (engine_move || human_move).fen_after,
       human_move: move(human_move),
-      engine_move: engine_move && move(engine_move)
+      engine_move: engine_move && move(engine_move),
+      skill_profile: skill_profile && skill_profile(skill_profile)
+    }
+  end
+
+  def skill_profile(profile) do
+    %{
+      game_type: profile.game_type,
+      estimated_rating: round(profile.estimated_rating),
+      rating_sigma: Float.round(profile.rating_sigma, 1),
+      display_label: profile.display_label,
+      games_count: profile.games_count
     }
   end
 

@@ -5,13 +5,30 @@ import { useParams } from "next/navigation";
 import { Chessboard } from "react-chessboard";
 import type { PieceDropHandlerArgs } from "react-chessboard";
 import { ProtectedRoute } from "@/lib/protected-route";
-import { getGame, submitMove, resignGame, Game, Move } from "@/lib/games-api";
+import { getGame, submitMove, resignGame, Game, Move, SkillProfile } from "@/lib/games-api";
 
 function resultLabel(game: Game): string {
   if (game.status === "in_progress") return "In progress";
   if (!game.result) return game.status;
   const winner = game.result === "white_wins" ? "You won" : game.result === "black_wins" ? "Engine won" : "Draw";
   return `${game.status} -- ${winner}`;
+}
+
+function CalibrationSummary({ profile }: { profile: SkillProfile }) {
+  const hedge =
+    profile.games_count <= 1
+      ? "This is a first, rough estimate -- it'll sharpen as you play more \"rate my play\" games."
+      : `Based on ${profile.games_count} calibration games so far -- still improving with each one.`;
+
+  return (
+    <div style={{ marginTop: 12, padding: 12, border: "1px solid #ccc", maxWidth: 420 }}>
+      <h3 style={{ marginTop: 0 }}>Rate my play: result</h3>
+      <p>
+        Estimated rating: <strong>{profile.estimated_rating}</strong> ({profile.display_label})
+      </p>
+      <p style={{ opacity: 0.7, fontSize: 14 }}>{hedge}</p>
+    </div>
+  );
 }
 
 function MoveRow({ move }: { move: Move }) {
@@ -58,6 +75,7 @@ function GameContent() {
                   ...result.game,
                   fen: result.fen,
                   moves: [...prev.moves, result.human_move, ...(result.engine_move ? [result.engine_move] : [])],
+                  skill_profile: result.skill_profile,
                 }
               : prev
           );
@@ -115,6 +133,11 @@ function GameContent() {
           )}
         </p>
         {error && <p style={{ color: "red" }}>{error}</p>}
+
+        {game.status !== "in_progress" && game.is_calibration && game.skill_profile && (
+          <CalibrationSummary profile={game.skill_profile} />
+        )}
+
         <p>
           <a href="/games">Back to games</a>
         </p>

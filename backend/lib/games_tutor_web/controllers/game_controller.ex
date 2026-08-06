@@ -34,8 +34,8 @@ defmodule GamesTutorWeb.GameController do
   def create_move(_conn, _params), do: {:error, :bad_request}
 
   def resign(conn, %{"id" => id}) do
-    with {:ok, game} <- Games.resign(current_user(conn), id) do
-      json(conn, GamesTutorWeb.GameJSON.show(game))
+    with {:ok, %{game: game, skill_profile: skill_profile}} <- Games.resign(current_user(conn), id) do
+      json(conn, GamesTutorWeb.GameJSON.show(game, skill_profile))
     end
   end
 

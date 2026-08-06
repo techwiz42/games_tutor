@@ -25,9 +25,18 @@ export type GameSummary = {
   ended_at: string | null;
 };
 
+export type SkillProfile = {
+  game_type: string;
+  estimated_rating: number;
+  rating_sigma: number;
+  display_label: string;
+  games_count: number;
+};
+
 export type Game = GameSummary & {
   fen: string;
   moves: Move[];
+  skill_profile?: SkillProfile | null;
 };
 
 export type MoveResult = {
@@ -35,6 +44,7 @@ export type MoveResult = {
   fen: string;
   human_move: Move;
   engine_move: Move | null;
+  skill_profile: SkillProfile | null;
 };
 
 async function asJson<T>(res: Response): Promise<T> {
@@ -53,15 +63,24 @@ export async function listGames(): Promise<GameSummary[]> {
   return data.games;
 }
 
-export async function createGame(opts: { opponentElo?: number; isCalibration?: boolean } = {}): Promise<Game> {
+export async function createGame(
+  opts: { opponentElo?: number; isCalibration?: boolean; selfReportedElo?: number } = {}
+): Promise<Game> {
   const res = await apiFetch("/api/games", {
     method: "POST",
     body: JSON.stringify({
       opponent_elo: opts.opponentElo,
       is_calibration: opts.isCalibration ?? false,
+      self_reported_elo: opts.selfReportedElo,
     }),
   });
   return asJson<Game>(res);
+}
+
+export async function listSkillProfiles(): Promise<SkillProfile[]> {
+  const res = await apiFetch("/api/skill-profiles");
+  const data = await asJson<{ skill_profiles: SkillProfile[] }>(res);
+  return data.skill_profiles;
 }
 
 export async function getGame(id: string): Promise<Game> {

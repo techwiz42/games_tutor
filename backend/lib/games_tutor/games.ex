@@ -4,16 +4,18 @@ defmodule GamesTutor.Games do
   `GamesTutor.Chess.GameServer`'s moduledoc) -- `white_wins` means the human
   won, `black_wins` means the engine won.
 
-  No `SkillProfile` exists yet (Phase 3), so "rate my play" opponent
-  strength resolution here only implements the plan's step 1 (explicit
-  override) and step 3 (platform default) -- step 2 (seed from the user's
-  existing profile) arrives with Phase 3.
+  "Rate my play" (`is_calibration: true`) opponent strength resolution
+  follows the plan's documented order: (1) an explicit `opponent_elo`
+  override, (2) the user's existing chess `SkillProfile` if one exists,
+  (3) a platform default (seeded from an optional `self_reported_elo` on
+  first-ever calibration, else a wide blind prior).
   """
   import Ecto.Query
 
   alias GamesTutor.Repo
   alias GamesTutor.Games.{Game, Move}
   alias GamesTutor.Chess.{GameServer, PostGameAnalysis}
+  alias GamesTutor.Skill
 
   # Below Stockfish's UCI_Elo floor (1320, confirmed in Phase 0) on purpose:
   # a calibration game needs to run long enough to sample many moves, and a
@@ -46,7 +48,7 @@ defmodule GamesTutor.Games do
   end
 
   def create_game(user, attrs) do
-    opponent_config = resolve_opponent_config(attrs)
+    opponent_config = resolve_opponent_config(user, attrs)
 
     game_attrs = %{
       user_id: user.id,
@@ -85,14 +87,23 @@ defmodule GamesTutor.Games do
          :ok <- ensure_in_progress(game) do
       {:ok, _pid} = GameServer.ensure_started(game.id, game.opponent_engine_config, move_ucis(game))
       {:ok, status} = GameServer.resign(game.id)
-      {:ok, finish_game(game, status)}
+      {game, skill_profile} = finish_game(game, status)
+      {:ok, %{game: game, skill_profile: skill_profile}}
     end
   end
 
   ## Internal
 
-  defp resolve_opponent_config(%{"opponent_elo" => elo}) when is_integer(elo), do: %{"elo" => elo}
-  defp resolve_opponent_config(_attrs), do: %{"elo" => @default_calibration_elo}
+  defp resolve_opponent_config(_user, %{"opponent_elo" => elo}) when is_integer(elo), do: %{"elo" => elo}
+
+  defp resolve_opponent_config(user, %{"is_calibration" => true} = attrs) do
+    self_reported = Map.get(attrs, "self_reported_elo")
+    opts = if is_integer(self_reported), do: [self_reported_elo: self_reported], else: []
+    profile = Skill.get_or_init_profile(user, "chess", opts)
+    %{"elo" => round(profile.estimated_rating)}
+  end
+
+  defp resolve_opponent_config(_user, _attrs), do: %{"elo" => @default_calibration_elo}
 
   defp ensure_in_progress(%Game{status: "in_progress"}), do: :ok
   defp ensure_in_progress(%Game{}), do: {:error, :game_over}
@@ -105,13 +116,13 @@ defmodule GamesTutor.Games do
       {:ok, human_move} = insert_move(game, human_attrs)
       engine_move = engine_attrs && insert_move!(game, engine_attrs)
 
-      game =
+      {game, skill_profile} =
         case status do
-          :continue -> game
+          :continue -> {game, nil}
           terminal -> finish_game(game, terminal)
         end
 
-      %{game: game, human_move: human_move, engine_move: engine_move}
+      %{game: game, human_move: human_move, engine_move: engine_move, skill_profile: skill_profile}
     end)
   end
 
@@ -124,6 +135,9 @@ defmodule GamesTutor.Games do
     move
   end
 
+  # Returns `{game, skill_profile_or_nil}` -- the profile is only non-nil
+  # when this was a calibration game with analyzable moves (see
+  # `Skill.record_calibration_result/1`).
   defp finish_game(game, status) do
     {db_status, result} = translate_status(status)
 
@@ -137,7 +151,14 @@ defmodule GamesTutor.Games do
       |> Repo.update!()
 
     {:ok, _pid} = PostGameAnalysis.enqueue(game.id)
-    game
+
+    skill_profile =
+      if game.is_calibration do
+        {:ok, profile} = Skill.record_calibration_result(game)
+        profile
+      end
+
+    {game, skill_profile}
   end
 
   defp translate_status({:checkmate, :white_wins}), do: {"checkmate", "white_wins"}
