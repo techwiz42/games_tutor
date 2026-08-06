@@ -380,21 +380,50 @@ defmodule GamesTutor.Go.GameServer do
     end)
   end
 
-  defp await_response(port, expected_id, buffer) do
-    receive do
-      {^port, {:data, data}} ->
-        buffer = buffer <> data
+  # Public (not `defp`) so the buffer-draining logic below is directly
+  # testable with a fake `port` term and messages pre-loaded into the test
+  # process's own mailbox -- see game_server_test.exs.
+  @doc false
+  def await_response(port, expected_id, buffer) do
+    case pop_line(buffer) do
+      {:ok, decoded, rest} ->
+        if decoded["id"] == expected_id, do: {:ok, decoded}, else: await_response(port, expected_id, rest)
 
-        case String.split(buffer, "\n", parts: 2) do
-          [line, rest] ->
-            decoded = Jason.decode!(line)
-            if decoded["id"] == expected_id, do: {:ok, decoded}, else: await_response(port, expected_id, rest)
-
-          [_incomplete] ->
-            await_response(port, expected_id, buffer)
+      :incomplete ->
+        receive do
+          {^port, {:data, data}} -> await_response(port, expected_id, buffer <> data)
+        after
+          @query_timeout -> {:error, :katago_timeout}
         end
-    after
-      @query_timeout -> {:error, :katago_timeout}
+    end
+  end
+
+  # Pops one complete newline-terminated line off the front of `buffer`. A
+  # single {:data, ...} chunk from the port can contain more than one
+  # complete response (KataGo writes them back-to-back) -- this drains every
+  # already-buffered complete line before ever blocking in `receive` again;
+  # the previous version only checked the newest chunk, so a second response
+  # already sitting in `buffer` after an id mismatch would sit unparsed until
+  # (maybe never) more data arrived, producing a spurious @query_timeout.
+  #
+  # Also skips (rather than crashes on) any line that isn't valid JSON --
+  # analysis.cfg points KataGo's own logging at `logDir`, not stdout, so this
+  # shouldn't normally trigger, but a stray non-JSON line on stdout must not
+  # take down the whole GameServer via Jason.decode!/1.
+  defp pop_line(buffer) do
+    case String.split(buffer, "\n", parts: 2) do
+      [line, rest] ->
+        case Jason.decode(line) do
+          {:ok, decoded} ->
+            {:ok, decoded, rest}
+
+          {:error, _reason} ->
+            Logger.warning("Skipping non-JSON line from KataGo stdout: #{inspect(line)}")
+            pop_line(rest)
+        end
+
+      [_incomplete] ->
+        :incomplete
     end
   end
 

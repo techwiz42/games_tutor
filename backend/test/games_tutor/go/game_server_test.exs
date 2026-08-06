@@ -193,6 +193,56 @@ defmodule GamesTutor.Go.GameServerTest do
     assert {:ok, %{status: :continue}} = GameServer.submit_human_move(game_id, "pass")
   end
 
+  # await_response/3 is `def` (not `defp`) specifically so these can call it
+  # directly with a fake `port` term -- any term works, since the `receive`
+  # inside only ever pattern-matches `{^port, {:data, data}}`, never touches
+  # the real Port API. Messages are pre-loaded into this test process's own
+  # mailbox before calling, so `receive` finds them immediately.
+  describe "await_response/3 line buffering" do
+    import ExUnit.CaptureLog
+
+    test "drains a second complete response already in the buffer instead of blocking on receive" do
+      port = make_ref()
+
+      chunk =
+        Jason.encode!(%{"id" => "q1", "rootInfo" => %{}}) <>
+          "\n" <> Jason.encode!(%{"id" => "q2", "rootInfo" => %{}}) <> "\n"
+
+      send(self(), {port, {:data, chunk}})
+
+      # Before the fix: after the "q1" mismatch, this recursed straight into
+      # `receive` without checking whether "q2" was already sitting in the
+      # leftover buffer -- since no second message is ever sent here, that
+      # version of the code would hang until @query_timeout (60s).
+      assert {:ok, %{"id" => "q2"}} = GameServer.await_response(port, "q2", "")
+    end
+
+    test "reassembles a response whose JSON line is split across two chunks" do
+      port = make_ref()
+      line = Jason.encode!(%{"id" => "q1", "rootInfo" => %{}}) <> "\n"
+      split_at = div(String.length(line), 2)
+      {first, second} = String.split_at(line, split_at)
+
+      send(self(), {port, {:data, first}})
+      send(self(), {port, {:data, second}})
+
+      assert {:ok, %{"id" => "q1"}} = GameServer.await_response(port, "q1", "")
+    end
+
+    test "skips a non-JSON stdout line (logging a warning) instead of crashing" do
+      port = make_ref()
+      chunk = "not json at all\n" <> Jason.encode!(%{"id" => "q1", "rootInfo" => %{}}) <> "\n"
+
+      log =
+        capture_log(fn ->
+          send(self(), {port, {:data, chunk}})
+          assert {:ok, %{"id" => "q1"}} = GameServer.await_response(port, "q1", "")
+        end)
+
+      assert log =~ "Skipping non-JSON line"
+    end
+  end
+
   # grid is row-major with row 0 = top (rank 9 on a 9x9 board) -- see
   # GamesTutor.Go.Board.to_grid/1's moduledoc.
   defp stone_at(grid, coord_str) do
