@@ -7,7 +7,7 @@ defmodule GamesTutor.Accounts do
 
   import Ecto.Query
   alias GamesTutor.Repo
-  alias GamesTutor.Accounts.{User, UserToken}
+  alias GamesTutor.Accounts.{User, UserToken, UserSettings}
   alias GamesTutor.Mailer
 
   ## Users
@@ -305,5 +305,24 @@ defmodule GamesTutor.Accounts do
     Repo.update_all(UserToken.active_chain_query(user_id, "refresh"),
       set: [revoked_at: now]
     )
+  end
+
+  ## Settings
+
+  @doc "Returns the user's settings, materializing the row with defaults on first access."
+  def get_settings(user) do
+    Repo.get(UserSettings, user.id) || init_settings(user)
+  end
+
+  defp init_settings(user) do
+    {:ok, settings} =
+      %UserSettings{} |> UserSettings.changeset(%{user_id: user.id}) |> Repo.insert()
+
+    settings
+  end
+
+  @doc "For the adjust_explanation_depth voice tool."
+  def update_settings(user, attrs) do
+    get_settings(user) |> UserSettings.changeset(attrs) |> Repo.update()
   end
 end

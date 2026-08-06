@@ -35,6 +35,21 @@ config :games_tutor, GamesTutor.Guardian,
 # of its options for test speed.
 config :games_tutor, :stockfish_path, System.get_env("STOCKFISH_PATH", "/usr/games/stockfish")
 
+# Real docker-compose redis (see docker-compose.yml's port mapping) -- same
+# no-mocks convention as Postgres/Stockfish above.
+config :games_tutor, :redis, host: "localhost", port: 6380
+
+# Real OpenAI API key -- used sparingly, by the one dedicated integration
+# test that actually mints a session (a real, small, billed API call; not
+# hit by the rest of the suite).
+default_openai_key_file = Path.expand("../../secrets/openai_api_key.txt", __DIR__)
+
+config :games_tutor,
+       :openai_api_key,
+       System.get_env("OPENAI_API_KEY_FILE", default_openai_key_file)
+       |> File.read!()
+       |> String.trim()
+
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false
 

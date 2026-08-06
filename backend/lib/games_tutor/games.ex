@@ -92,7 +92,53 @@ defmodule GamesTutor.Games do
     end
   end
 
+  @doc "For the get_board_state voice tool."
+  def board_state(user, game_id) do
+    with {:ok, game} <- get_game(user, game_id) do
+      fen = current_fen(game)
+      to_move = if game.status == "in_progress", do: side_to_move(fen), else: nil
+
+      {:ok, %{fen: fen, status: game.status, result: game.result, to_move: to_move, is_calibration: game.is_calibration}}
+    end
+  end
+
+  @doc "For the get_last_move_analysis / explain_move voice tools. `ply` nil means the most recent move."
+  def move_analysis(user, game_id, ply \\ nil) do
+    with {:ok, game} <- get_game(user, game_id) do
+      move = if ply, do: Enum.find(game.moves, &(&1.ply == ply)), else: List.last(game.moves)
+      if move, do: {:ok, move}, else: {:error, :not_found}
+    end
+  end
+
+  @doc """
+  For the request_hint voice tool. Hard-refused for calibration games --
+  enforced here in code (not just in the voice agent's prompted behavior),
+  since hinting would contaminate the skill measurement.
+  """
+  def hint(user, game_id) do
+    with {:ok, game} <- get_game(user, game_id) do
+      cond do
+        game.is_calibration ->
+          {:error, :hint_refused_calibration}
+
+        game.status != "in_progress" ->
+          {:error, :game_over}
+
+        true ->
+          {:ok, _pid} = GameServer.ensure_started(game.id, game.opponent_engine_config, move_ucis(game))
+          GameServer.hint(game.id)
+      end
+    end
+  end
+
   ## Internal
+
+  defp side_to_move(fen) do
+    case String.split(fen) do
+      [_placement, "w" | _] -> "human"
+      [_placement, "b" | _] -> "engine"
+    end
+  end
 
   defp resolve_opponent_config(_user, %{"opponent_elo" => elo}) when is_integer(elo), do: %{"elo" => elo}
 

@@ -55,7 +55,8 @@ defmodule GamesTutor.MixProject do
       {:bcrypt_elixir, "~> 3.1"},
       {:guardian, "~> 2.3"},
       {:cors_plug, "~> 3.0"},
-      {:binbo, "~> 4.0"}
+      {:binbo, "~> 4.0"},
+      {:redix, "~> 1.5"}
     ]
   end
 

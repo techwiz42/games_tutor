@@ -46,7 +46,7 @@ defmodule GamesTutorWeb.GameJSON do
     }
   end
 
-  defp move(move) do
+  def move(move) do
     %{
       ply: move.ply,
       player: move.player,

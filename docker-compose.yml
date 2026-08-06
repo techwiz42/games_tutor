@@ -35,6 +35,7 @@ services:
       DB_HOST: postgres
       DB_NAME: games_tutor
       DB_USER: games_tutor
+      REDIS_HOST: redis
       PHX_SERVER: "true"
       # Overridden with the real public domain at actual deployment time (see
       # secrets/README.md) -- these localhost defaults are for a portable

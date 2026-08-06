@@ -38,12 +38,29 @@ defmodule GamesTutorWeb.Router do
     get "/:id", GameController, :show
     post "/:id/moves", GameController, :create_move
     post "/:id/resign", GameController, :resign
+    get "/:id/board-state", GameController, :board_state
+    get "/:id/move-analysis", GameController, :move_analysis
+    post "/:id/hint", GameController, :hint
   end
 
   scope "/api/skill-profiles", GamesTutorWeb do
     pipe_through [:api, :authenticated]
 
     get "/", SkillProfileController, :index
+  end
+
+  scope "/api/user-settings", GamesTutorWeb do
+    pipe_through [:api, :authenticated]
+
+    get "/", UserSettingsController, :show
+    patch "/", UserSettingsController, :update
+  end
+
+  scope "/api/voice", GamesTutorWeb do
+    pipe_through [:api, :authenticated]
+
+    post "/session", VoiceController, :create
+    post "/session/:id/end", VoiceController, :end_session
   end
 
   scope "/api", GamesTutorWeb do

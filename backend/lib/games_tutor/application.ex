@@ -12,6 +12,8 @@ defmodule GamesTutor.Application do
     # in its own docs calls binbo:start() before any other binbo function.
     {:ok, _} = Application.ensure_all_started(:binbo)
 
+    redis_opts = Application.fetch_env!(:games_tutor, :redis)
+
     children = [
       GamesTutorWeb.Telemetry,
       GamesTutor.Repo,
@@ -21,6 +23,7 @@ defmodule GamesTutor.Application do
       {Registry, keys: :unique, name: GamesTutor.Chess.GameRegistry},
       {DynamicSupervisor, name: GamesTutor.Chess.GameSupervisor, strategy: :one_for_one},
       {Task.Supervisor, name: GamesTutor.Chess.AnalysisTaskSupervisor},
+      {Redix, host: redis_opts[:host], port: redis_opts[:port], name: GamesTutor.Redis},
       # Start to serve requests, typically the last entry
       GamesTutorWeb.Endpoint
     ]

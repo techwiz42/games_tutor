@@ -78,6 +78,13 @@ defmodule GamesTutor.Chess.GameServer do
 
   def fen(game_id), do: GenServer.call(via(game_id), :fen)
 
+  @doc """
+  A suggested move for whoever is currently to move -- free (no extra
+  engine call): `last_analysis` is already the analysis of the current
+  position, computed right after the previous move was applied.
+  """
+  def hint(game_id), do: GenServer.call(via(game_id), :hint)
+
   defp via(game_id), do: {:via, Registry, {GamesTutor.Chess.GameRegistry, game_id}}
 
   # ---- Server callbacks ----
@@ -142,6 +149,11 @@ defmodule GamesTutor.Chess.GameServer do
   def handle_call(:fen, _from, state) do
     {:ok, fen} = :binbo.get_fen(state.board_pid)
     {:reply, {:ok, fen}, state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_call(:hint, _from, state) do
+    {:reply, {:ok, state.last_analysis.bestmove}, state, @idle_timeout}
   end
 
   @impl true

@@ -66,6 +66,17 @@ unless config_env() == :test do
     :stockfish_path,
     System.get_env("STOCKFISH_PATH", "/usr/games/stockfish")
 
+  config :games_tutor, :openai_api_key, Secrets.read("OPENAI_API_KEY")
+
+  redis_host = System.get_env("REDIS_HOST", "localhost")
+
+  redis_port =
+    String.to_integer(
+      System.get_env("REDIS_PORT", if(redis_host == "localhost", do: "6380", else: "6379"))
+    )
+
+  config :games_tutor, :redis, host: redis_host, port: redis_port
+
   # Swoosh's API client (Req) must be explicitly enabled to actually send over
   # HTTP -- the phx.new default disables it in dev (local mailbox preview only).
   config :swoosh, :api_client, Swoosh.ApiClient.Req

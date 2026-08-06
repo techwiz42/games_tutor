@@ -6,6 +6,7 @@ import { Chessboard } from "react-chessboard";
 import type { PieceDropHandlerArgs } from "react-chessboard";
 import { ProtectedRoute } from "@/lib/protected-route";
 import { getGame, submitMove, resignGame, Game, Move, SkillProfile } from "@/lib/games-api";
+import { useRealtimeVoiceSession } from "@/lib/use-realtime-voice-session";
 
 function resultLabel(game: Game): string {
   if (game.status === "in_progress") return "In progress";
@@ -27,6 +28,48 @@ function CalibrationSummary({ profile }: { profile: SkillProfile }) {
         Estimated rating: <strong>{profile.estimated_rating}</strong> ({profile.display_label})
       </p>
       <p style={{ opacity: 0.7, fontSize: 14 }}>{hedge}</p>
+    </div>
+  );
+}
+
+function VoicePanel({ gameId }: { gameId: string }) {
+  const { status, error, transcript, isAssistantSpeaking, isUserSpeaking, connect, disconnect, audioElRef } =
+    useRealtimeVoiceSession(gameId);
+
+  const statusLabel = {
+    idle: "Not connected",
+    "requesting-permission": "Requesting microphone permission...",
+    connecting: "Connecting...",
+    connected: isAssistantSpeaking ? "Speaking..." : isUserSpeaking ? "Listening..." : "Connected",
+    ended: "Session ended",
+    error: "Error",
+  }[status];
+
+  return (
+    <div style={{ marginTop: 16, padding: 12, border: "1px solid #ccc", maxWidth: 420 }}>
+      <h3 style={{ marginTop: 0 }}>Voice tutor</h3>
+      <p>{statusLabel}</p>
+      {error && <p style={{ color: "red" }}>{error}</p>}
+
+      {status === "connected" ? (
+        <button onClick={disconnect}>End voice session</button>
+      ) : (
+        <button onClick={connect} disabled={status === "requesting-permission" || status === "connecting"}>
+          Start voice tutor
+        </button>
+      )}
+
+      <audio ref={audioElRef} autoPlay />
+
+      {transcript.length > 0 && (
+        <div style={{ marginTop: 12, maxHeight: 200, overflowY: "auto", fontSize: 14 }}>
+          {transcript.map((entry, i) => (
+            <p key={i} style={{ margin: "4px 0" }}>
+              {entry.text}
+            </p>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -137,6 +180,8 @@ function GameContent() {
         {game.status !== "in_progress" && game.is_calibration && game.skill_profile && (
           <CalibrationSummary profile={game.skill_profile} />
         )}
+
+        <VoicePanel gameId={id} />
 
         <p>
           <a href="/games">Back to games</a>

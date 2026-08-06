@@ -49,6 +49,39 @@ defmodule GamesTutorWeb.FallbackController do
     conn |> put_status(:unprocessable_entity) |> json(%{detail: "Game is already over", code: "game_over"})
   end
 
+  def call(conn, {:error, :hint_refused_calibration}) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{
+      detail: "Hints aren't available during a \"rate my play\" calibration game",
+      code: "hint_refused_calibration"
+    })
+  end
+
+  def call(conn, {:error, :rate_limited}) do
+    conn
+    |> put_status(:too_many_requests)
+    |> json(%{detail: "Too many voice sessions started recently -- try again later", code: "rate_limited"})
+  end
+
+  def call(conn, {:error, :session_already_active}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{detail: "A voice session is already active", code: "session_already_active"})
+  end
+
+  def call(conn, {:error, :already_ended}) do
+    conn |> put_status(:unprocessable_entity) |> json(%{detail: "Voice session already ended"})
+  end
+
+  def call(conn, {:error, {:openai_error, _status, _body}}) do
+    conn |> put_status(:bad_gateway) |> json(%{detail: "Voice service is temporarily unavailable"})
+  end
+
+  def call(conn, {:error, {:openai_request_failed, _reason}}) do
+    conn |> put_status(:bad_gateway) |> json(%{detail: "Voice service is temporarily unavailable"})
+  end
+
   def call(conn, {:error, %Ecto.Changeset{} = changeset}) do
     errors =
       Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->

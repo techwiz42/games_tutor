@@ -100,3 +100,35 @@ export async function resignGame(id: string): Promise<Game> {
   const res = await apiFetch(`/api/games/${id}/resign`, { method: "POST" });
   return asJson<Game>(res);
 }
+
+export type BoardState = {
+  fen: string;
+  status: string;
+  result: string | null;
+  to_move: "human" | "engine" | null;
+  is_calibration: boolean;
+};
+
+export async function getBoardState(id: string): Promise<BoardState> {
+  const res = await apiFetch(`/api/games/${id}/board-state`);
+  return asJson<BoardState>(res);
+}
+
+export async function getMoveAnalysis(id: string, ply?: number): Promise<Move> {
+  const query = ply ? `?ply=${ply}` : "";
+  const res = await apiFetch(`/api/games/${id}/move-analysis${query}`);
+  return asJson<Move>(res);
+}
+
+export async function requestHint(id: string): Promise<{ move: string }> {
+  const res = await apiFetch(`/api/games/${id}/hint`, { method: "POST" });
+  return asJson<{ move: string }>(res);
+}
+
+export async function updateExplanationDepth(depth: "brief" | "detailed"): Promise<void> {
+  const res = await apiFetch("/api/user-settings", {
+    method: "PATCH",
+    body: JSON.stringify({ default_explanation_depth: depth }),
+  });
+  await asJson(res);
+}

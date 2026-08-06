@@ -39,5 +39,27 @@ defmodule GamesTutorWeb.GameController do
     end
   end
 
+  ## Voice tool endpoints
+
+  def board_state(conn, %{"id" => id}) do
+    with {:ok, state} <- Games.board_state(current_user(conn), id) do
+      json(conn, state)
+    end
+  end
+
+  def move_analysis(conn, %{"id" => id} = params) do
+    ply = params["ply"] && String.to_integer(params["ply"])
+
+    with {:ok, move} <- Games.move_analysis(current_user(conn), id, ply) do
+      json(conn, GamesTutorWeb.GameJSON.move(move))
+    end
+  end
+
+  def hint(conn, %{"id" => id}) do
+    with {:ok, uci} <- Games.hint(current_user(conn), id) do
+      json(conn, %{move: uci})
+    end
+  end
+
   defp current_user(conn), do: Guardian.Plug.current_resource(conn)
 end
