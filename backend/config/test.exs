@@ -35,6 +35,16 @@ config :games_tutor, GamesTutor.Guardian,
 # of its options for test speed.
 config :games_tutor, :stockfish_path, System.get_env("STOCKFISH_PATH", "/usr/games/stockfish")
 
+# Real katago binary/model -- reuses the Phase 0 spike's already-verified
+# artifacts (spikes/engines/) rather than redownloading for local dev/test;
+# the Docker image downloads its own copy fresh (see backend/Dockerfile).
+default_katago_dir = Path.expand("../../spikes/engines", __DIR__)
+
+config :games_tutor, :katago,
+  path: System.get_env("KATAGO_PATH", Path.join(default_katago_dir, "bin/katago")),
+  model_path: System.get_env("KATAGO_MODEL_PATH", Path.join(default_katago_dir, "models/kata1-b6c96.txt.gz")),
+  config_path: System.get_env("KATAGO_CONFIG_PATH", Path.expand("../priv/katago/analysis.cfg", __DIR__))
+
 # Real docker-compose redis (see docker-compose.yml's port mapping) -- same
 # no-mocks convention as Postgres/Stockfish above.
 config :games_tutor, :redis, host: "localhost", port: 6380

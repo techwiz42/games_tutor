@@ -16,9 +16,9 @@ defmodule GamesTutor.Chess.PostGameAnalysis do
   @deep_analysis_depth 18
   @decisive_score 10_000
 
-  @doc "Fire-and-forget: runs on GamesTutor.Chess.AnalysisTaskSupervisor."
+  @doc "Fire-and-forget: runs on GamesTutor.Games.AnalysisTaskSupervisor."
   def enqueue(game_id) do
-    Task.Supervisor.start_child(GamesTutor.Chess.AnalysisTaskSupervisor, fn -> run(game_id) end)
+    Task.Supervisor.start_child(GamesTutor.Games.AnalysisTaskSupervisor, fn -> run(game_id) end)
   end
 
   def run(game_id) do

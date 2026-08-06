@@ -8,12 +8,13 @@ import { createGame, listGames, listSkillProfiles, GameSummary, SkillProfile } f
 function statusLabel(game: GameSummary): string {
   if (game.status === "in_progress") return "In progress";
   if (!game.result) return game.status;
-  const winner = game.result === "white_wins" ? "You won" : game.result === "black_wins" ? "Engine won" : "Draw";
+  const winner = game.result === `${game.human_color}_wins` ? "You won" : game.result === "draw" ? "Draw" : "Engine won";
   return `${game.status} -- ${winner}`;
 }
 
 function GamesContent() {
   const router = useRouter();
+  const [gameType, setGameType] = useState<"chess" | "go">("chess");
   const [games, setGames] = useState<GameSummary[] | null>(null);
   const [profiles, setProfiles] = useState<SkillProfile[]>([]);
   const [creating, setCreating] = useState(false);
@@ -36,7 +37,7 @@ function GamesContent() {
     setCreating(true);
     setError(null);
     try {
-      const game = await createGame(opts);
+      const game = await createGame({ gameType, ...opts });
       router.push(`/games/${game.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create game");
@@ -45,31 +46,41 @@ function GamesContent() {
   };
 
   const handleRateMyPlay = () => {
-    const hasChessProfile = profiles.some((p) => p.game_type === "chess");
-    if (hasChessProfile) {
+    const hasProfile = profiles.some((p) => p.game_type === gameType);
+    if (hasProfile) {
       startGame({ isCalibration: true });
     } else {
       setShowOnboarding(true);
     }
   };
 
-  const chessProfile = profiles.find((p) => p.game_type === "chess");
+  const profile = profiles.find((p) => p.game_type === gameType);
+  const opponentName = gameType === "chess" ? "Stockfish" : "KataGo";
 
   return (
     <div style={{ maxWidth: 640, margin: "40px auto", padding: 24 }}>
       <h1>Games</h1>
 
-      {chessProfile && (
+      <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+        <label>
+          <input type="radio" checked={gameType === "chess"} onChange={() => setGameType("chess")} /> Chess
+        </label>
+        <label>
+          <input type="radio" checked={gameType === "go"} onChange={() => setGameType("go")} /> Go
+        </label>
+      </div>
+
+      {profile && (
         <p style={{ opacity: 0.75 }}>
-          Estimated chess rating: <strong>{chessProfile.estimated_rating}</strong> ({chessProfile.display_label})
+          Estimated {gameType} rating: <strong>{profile.estimated_rating}</strong> ({profile.display_label})
           {" -- "}
-          based on {chessProfile.games_count} calibration game{chessProfile.games_count === 1 ? "" : "s"}
+          based on {profile.games_count} calibration game{profile.games_count === 1 ? "" : "s"}
         </p>
       )}
 
       <div style={{ display: "flex", gap: 12 }}>
         <button onClick={() => startGame({})} disabled={creating}>
-          {creating ? "Starting..." : "New game vs. Stockfish"}
+          {creating ? "Starting..." : `New game vs. ${opponentName}`}
         </button>
         <button onClick={handleRateMyPlay} disabled={creating}>
           Rate my play
@@ -79,7 +90,7 @@ function GamesContent() {
       {showOnboarding && (
         <div style={{ marginTop: 12, padding: 12, border: "1px solid #ccc", maxWidth: 420 }}>
           <p>
-            Roughly what&apos;s your chess rating, if you know it? This just gives the tutor a better starting
+            Roughly what&apos;s your {gameType} rating, if you know it? This just gives the tutor a better starting
             guess -- skip it if you&apos;re not sure.
           </p>
           <input

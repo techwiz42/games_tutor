@@ -66,6 +66,11 @@ unless config_env() == :test do
     :stockfish_path,
     System.get_env("STOCKFISH_PATH", "/usr/games/stockfish")
 
+  config :games_tutor, :katago,
+    path: System.get_env("KATAGO_PATH", "/usr/local/bin/katago"),
+    model_path: System.get_env("KATAGO_MODEL_PATH", "/opt/katago/model.bin.gz"),
+    config_path: System.get_env("KATAGO_CONFIG_PATH", "/opt/katago/analysis.cfg")
+
   config :games_tutor, :openai_api_key, Secrets.read("OPENAI_API_KEY")
 
   redis_host = System.get_env("REDIS_HOST", "localhost")

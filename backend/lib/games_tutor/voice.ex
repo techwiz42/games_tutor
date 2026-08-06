@@ -43,7 +43,7 @@ defmodule GamesTutor.Voice do
          :ok <- acquire_active_session_guard(user) do
       mode = if game.is_calibration, do: "calibration_proctor", else: "tutoring"
 
-      case mint_ephemeral_key(mode) do
+      case mint_ephemeral_key(mode, game.game_type) do
         {:ok, minted} ->
           {:ok, session} =
             %VoiceSession{}
@@ -127,16 +127,16 @@ defmodule GamesTutor.Voice do
 
   defp active_session_key(user), do: "voice:active:#{user.id}"
 
-  defp mint_ephemeral_key(mode) do
+  defp mint_ephemeral_key(mode, game_type) do
     api_key = Application.fetch_env!(:games_tutor, :openai_api_key)
 
     body = %{
       session: %{
         type: "realtime",
         model: @model,
-        instructions: Tools.instructions(mode),
+        instructions: Tools.instructions(mode, game_type),
         audio: %{output: %{voice: @openai_voice}},
-        tools: Tools.schema(),
+        tools: Tools.schema(game_type),
         tool_choice: "auto"
       }
     }

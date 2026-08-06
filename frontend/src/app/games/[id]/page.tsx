@@ -2,16 +2,23 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
+import dynamic from "next/dynamic";
 import { Chessboard } from "react-chessboard";
 import type { PieceDropHandlerArgs } from "react-chessboard";
 import { ProtectedRoute } from "@/lib/protected-route";
 import { getGame, submitMove, resignGame, Game, Move, SkillProfile } from "@/lib/games-api";
 import { useRealtimeVoiceSession } from "@/lib/use-realtime-voice-session";
 
+// Shudan's render is non-deterministic between server and client passes (an
+// internal `random` prop for fuzzy stone placement), which causes a
+// hydration mismatch under Next.js's default SSR -- confirmed in the Phase
+// 0 spike. A Go board has no SSR/SEO value anyway; render it client-only.
+const GoBoardPanel = dynamic(() => import("./GoBoardPanel"), { ssr: false });
+
 function resultLabel(game: Game): string {
   if (game.status === "in_progress") return "In progress";
   if (!game.result) return game.status;
-  const winner = game.result === "white_wins" ? "You won" : game.result === "black_wins" ? "Engine won" : "Draw";
+  const winner = game.result === `${game.human_color}_wins` ? "You won" : game.result === "draw" ? "Draw" : "Engine won";
   return `${game.status} -- ${winner}`;
 }
 
@@ -98,18 +105,11 @@ function GameContent() {
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load game"));
   }, [id]);
 
-  const handleDrop = useCallback(
-    ({ piece, sourceSquare, targetSquare }: PieceDropHandlerArgs) => {
-      if (!targetSquare || submitting || !game || game.status !== "in_progress") return false;
-
-      // Auto-queen promotion (v1 simplification -- no promotion picker yet;
-      // human is always White, so only a pawn reaching rank 8 can promote).
-      const isPromotion = piece.pieceType === "wP" && targetSquare[1] === "8";
-      const uci = `${sourceSquare}${targetSquare}${isPromotion ? "q" : ""}`;
-
+  const submitMoveAndUpdate = useCallback(
+    (moveStr: string) => {
       setSubmitting(true);
       setError(null);
-      submitMove(id, uci)
+      submitMove(id, moveStr)
         .then((result) => {
           setGame((prev) =>
             prev
@@ -127,6 +127,19 @@ function GameContent() {
           setError(err instanceof Error ? err.message : "Move failed");
         })
         .finally(() => setSubmitting(false));
+    },
+    [id]
+  );
+
+  const handleDrop = useCallback(
+    ({ piece, sourceSquare, targetSquare }: PieceDropHandlerArgs) => {
+      if (!targetSquare || submitting || !game || game.status !== "in_progress") return false;
+
+      // Auto-queen promotion (v1 simplification -- no promotion picker yet;
+      // human is always White, so only a pawn reaching rank 8 can promote).
+      const isPromotion = piece.pieceType === "wP" && targetSquare[1] === "8";
+      const uci = `${sourceSquare}${targetSquare}${isPromotion ? "q" : ""}`;
+      submitMoveAndUpdate(uci);
 
       // Optimistic accept of the drag gesture -- the actual displayed
       // position stays driven by `game.fen` (a controlled prop), so an
@@ -134,7 +147,7 @@ function GameContent() {
       // touching `fen` state.
       return true;
     },
-    [id, game, submitting]
+    [game, submitting, submitMoveAndUpdate]
   );
 
   const handleResign = async () => {
@@ -156,17 +169,21 @@ function GameContent() {
   return (
     <div style={{ maxWidth: 900, margin: "24px auto", padding: 24, display: "flex", gap: 32 }}>
       <div>
-        <div style={{ width: 480 }}>
-          <Chessboard
-            options={{
-              position: game.fen,
-              boardOrientation: "white",
-              allowDragging: game.status === "in_progress" && !submitting,
-              canDragPiece: ({ piece }) => piece.pieceType.startsWith("w"),
-              onPieceDrop: handleDrop,
-            }}
-          />
-        </div>
+        {game.game_type === "go" ? (
+          <GoBoardPanel game={game} submitting={submitting} onMove={submitMoveAndUpdate} />
+        ) : (
+          <div style={{ width: 480 }}>
+            <Chessboard
+              options={{
+                position: game.fen,
+                boardOrientation: "white",
+                allowDragging: game.status === "in_progress" && !submitting,
+                canDragPiece: ({ piece }) => piece.pieceType.startsWith("w"),
+                onPieceDrop: handleDrop,
+              }}
+            />
+          </div>
+        )}
         <p style={{ marginTop: 12 }}>
           <strong>{resultLabel(game)}</strong>
           {game.status === "in_progress" && (

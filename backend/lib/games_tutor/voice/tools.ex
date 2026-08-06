@@ -5,6 +5,12 @@ defmodule GamesTutor.Voice.Tools do
   UI is the sole authoritative move input) -- these tools are all
   read/narrate, never write game state.
 
+  Both `schema/1` and `instructions/2` take `game_type` ("chess" | "go")
+  so wording matches what the player is actually looking at (chess pieces
+  dragged on a board vs. Go stones clicked into place; a chess rating vs.
+  a kyu/dan Go rating) -- otherwise a Go session would get instructions
+  that talk about castling and dragging pieces.
+
   None of the tool parameter schemas carry a `game_id`: the browser already
   knows which game the voice session is for (it started the session), so
   it injects that itself when dispatching -- the model never gets to pick
@@ -12,73 +18,75 @@ defmodule GamesTutor.Voice.Tools do
   but there's no reason to hand the model a knob it doesn't need).
   """
 
-  @schema [
-    %{
-      type: "function",
-      name: "get_board_state",
-      description: "Get the current board position, whose turn it is, and whether the game has ended.",
-      parameters: %{type: "object", properties: %{}, required: []}
-    },
-    %{
-      type: "function",
-      name: "get_last_move_analysis",
-      description:
-        "Get the engine's quality assessment (best/good/inaccuracy/mistake/blunder) of the most " <>
-          "recently played move. Cheap -- pre-computed when the move was made, not a live engine call.",
-      parameters: %{type: "object", properties: %{}, required: []}
-    },
-    %{
-      type: "function",
-      name: "explain_move",
-      description:
-        "Get the engine's quality assessment of a specific past move by its move number (ply), so you " <>
-          "can explain why a particular move was good or bad. Omit ply to explain the most recent move.",
-      parameters: %{
-        type: "object",
-        properties: %{ply: %{type: "integer", description: "The move number to explain, if a specific one was asked about."}},
-        required: []
+  def schema(game_type) do
+    [
+      %{
+        type: "function",
+        name: "get_board_state",
+        description: "Get the current board position, whose turn it is, and whether the game has ended.",
+        parameters: %{type: "object", properties: %{}, required: []}
+      },
+      %{
+        type: "function",
+        name: "get_last_move_analysis",
+        description:
+          "Get the engine's quality assessment (best/good/inaccuracy/mistake/blunder) of the most " <>
+            "recently played move. Cheap -- pre-computed when the move was made, not a live engine call.",
+        parameters: %{type: "object", properties: %{}, required: []}
+      },
+      %{
+        type: "function",
+        name: "explain_move",
+        description:
+          "Get the engine's quality assessment of a specific past move by its move number (ply), so you " <>
+            "can explain why a particular move was good or bad. Omit ply to explain the most recent move.",
+        parameters: %{
+          type: "object",
+          properties: %{
+            ply: %{type: "integer", description: "The move number to explain, if a specific one was asked about."}
+          },
+          required: []
+        }
+      },
+      %{
+        type: "function",
+        name: "request_hint",
+        description:
+          "Get a suggested move for the human's current turn. Only available in tutoring games -- " <>
+            "always refused during a \"rate my play\" calibration game, even if asked, since hinting " <>
+            "would contaminate the skill measurement.",
+        parameters: %{type: "object", properties: %{}, required: []}
+      },
+      %{
+        type: "function",
+        name: "adjust_explanation_depth",
+        description: "Change how detailed the player wants explanations to be going forward.",
+        parameters: %{
+          type: "object",
+          properties: %{depth: %{type: "string", enum: ["brief", "detailed"]}},
+          required: ["depth"]
+        }
+      },
+      %{
+        type: "function",
+        name: "get_skill_profile",
+        description: "Get the player's current estimated #{game_type} rating and how many calibration games it's based on.",
+        parameters: %{type: "object", properties: %{}, required: []}
       }
-    },
-    %{
-      type: "function",
-      name: "request_hint",
-      description:
-        "Get a suggested move for the human's current turn. Only available in tutoring games -- " <>
-          "always refused during a \"rate my play\" calibration game, even if asked, since hinting " <>
-          "would contaminate the skill measurement.",
-      parameters: %{type: "object", properties: %{}, required: []}
-    },
-    %{
-      type: "function",
-      name: "adjust_explanation_depth",
-      description: "Change how detailed the player wants explanations to be going forward.",
-      parameters: %{
-        type: "object",
-        properties: %{depth: %{type: "string", enum: ["brief", "detailed"]}},
-        required: ["depth"]
-      }
-    },
-    %{
-      type: "function",
-      name: "get_skill_profile",
-      description: "Get the player's current estimated chess rating and how many calibration games it's based on.",
-      parameters: %{type: "object", properties: %{}, required: []}
-    }
-  ]
+    ]
+  end
 
-  def schema, do: @schema
-
-  @doc "mode is \"calibration_proctor\" or \"tutoring\" (a string, matching VoiceSession.modes/0 -- avoids String.to_existing_atom's module-load-order fragility for no benefit)."
-  def instructions("calibration_proctor") do
+  @doc "mode is \"calibration_proctor\" or \"tutoring\" (a string, matching VoiceSession.modes/0)."
+  def instructions("calibration_proctor", game_type) do
     """
-    You are proctoring a "rate my play" calibration game for games_tutor, a chess tutoring app.
+    You are proctoring a "rate my play" calibration game for games_tutor, a #{game_type} tutoring app.
     Your job right now is to measure the player's true skill level, not to teach.
 
     Say ONE brief line at the very start: that you'll stay quiet and they should just play their
     best, and you'll talk more after the game. During play, only: confirm moves briefly if asked,
-    and answer pure rules-legality questions (e.g. "can I castle here?"). Do NOT comment on move
-    quality, do NOT offer encouragement or criticism, and do NOT volunteer opinions about the
-    position -- any of that would change how the player plays and contaminate the measurement.
+    and answer pure rules-legality questions (e.g. "#{legality_example(game_type)}"). Do NOT comment
+    on move quality, do NOT offer encouragement or criticism, and do NOT volunteer opinions about
+    the position -- any of that would change how the player plays and contaminate the measurement.
 
     If asked for a hint or any help choosing a move, politely decline and remind them this is a
     silent calibration game -- call request_hint if you want the mechanism to enforce this for you,
@@ -88,11 +96,11 @@ defmodule GamesTutor.Voice.Tools do
     """
   end
 
-  def instructions("tutoring") do
+  def instructions("tutoring", game_type) do
     """
-    You are a friendly, encouraging chess tutor for games_tutor. The player is looking at the
-    board themselves and makes moves by dragging pieces -- you never make moves, you narrate and
-    teach. Use get_board_state and get_last_move_analysis to stay aware of what's happening;
+    You are a friendly, encouraging #{game_type} tutor for games_tutor. The player is looking at the
+    board themselves and #{move_input_description(game_type)} -- you never make moves, you narrate
+    and teach. Use get_board_state and get_last_move_analysis to stay aware of what's happening;
     use explain_move when asked about a specific past move; use request_hint if they're stuck and
     want a suggestion; use adjust_explanation_depth if they ask for more or less detail; use
     get_skill_profile if they ask how they're doing overall.
@@ -102,4 +110,10 @@ defmodule GamesTutor.Voice.Tools do
     overstating precision.
     """
   end
+
+  defp legality_example("go"), do: "is it legal for me to play here?"
+  defp legality_example(_chess), do: "can I castle here?"
+
+  defp move_input_description("go"), do: "makes moves by clicking points on the board (or passing)"
+  defp move_input_description(_chess), do: "makes moves by dragging pieces"
 end

@@ -47,14 +47,14 @@ defmodule GamesTutor.Chess.GameServer do
   `%{"skill_level" => integer}`.
   """
   def ensure_started(game_id, opponent_config, moves \\ []) do
-    case Registry.lookup(GamesTutor.Chess.GameRegistry, game_id) do
+    case Registry.lookup(GamesTutor.Games.GameRegistry, game_id) do
       [{pid, _}] ->
         {:ok, pid}
 
       [] ->
         spec = {__MODULE__, game_id: game_id, opponent_config: opponent_config, moves: moves}
 
-        case DynamicSupervisor.start_child(GamesTutor.Chess.GameSupervisor, spec) do
+        case DynamicSupervisor.start_child(GamesTutor.Games.GameSupervisor, spec) do
           {:ok, pid} -> {:ok, pid}
           {:error, {:already_started, pid}} -> {:ok, pid}
           other -> other
@@ -85,7 +85,7 @@ defmodule GamesTutor.Chess.GameServer do
   """
   def hint(game_id), do: GenServer.call(via(game_id), :hint)
 
-  defp via(game_id), do: {:via, Registry, {GamesTutor.Chess.GameRegistry, game_id}}
+  defp via(game_id), do: {:via, Registry, {GamesTutor.Games.GameRegistry, game_id}}
 
   # ---- Server callbacks ----
 

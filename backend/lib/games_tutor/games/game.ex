@@ -1,15 +1,19 @@
 defmodule GamesTutor.Games.Game do
   @moduledoc """
-  A played game against the engine. Schema is kept generic across chess and
-  Go (Phase 5) rather than chess-specific: `record` holds PGN today, SGF
-  once Go exists; board state on process restore is reconstructed from it
-  rather than cached in a redundant column.
+  A played game against the engine, generic across chess and Go (not
+  chess-specific): `record` is reserved for a future PGN/SGF export
+  feature (unused for now -- board state on process restore is
+  reconstructed by replaying `moves`, not cached here). Human is always
+  White in chess, always Black in Go (see each game type's GameServer
+  moduledoc) -- `result` stores the literal board-color winner
+  ("white_wins"/"black_wins"), so callers must know which color the human
+  is playing to interpret it (see `GameJSON.summary/1`'s `human_color`).
   """
   use Ecto.Schema
   import Ecto.Changeset
 
-  @game_types ~w(chess)
-  @statuses ~w(in_progress checkmate stalemate draw resigned aborted)
+  @game_types ~w(chess go)
+  @statuses ~w(in_progress checkmate stalemate draw scored resigned aborted)
   @results ~w(white_wins black_wins draw)
 
   @primary_key {:id, :binary_id, autogenerate: true}

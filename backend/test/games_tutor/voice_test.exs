@@ -71,4 +71,13 @@ defmodule GamesTutor.VoiceTest do
 
     assert {:error, :not_found} = Voice.start_session(other, game.id)
   end
+
+  test "mints a real, Go-appropriate voice session for a Go game" do
+    user = register_user("voicetest6@example.com")
+    {:ok, game} = Games.create_game(user, %{"game_type" => "go"})
+
+    assert {:ok, %{session: session, ephemeral_key: key}} = Voice.start_session(user, game.id)
+    assert session.mode == "tutoring"
+    assert is_binary(key)
+  end
 end

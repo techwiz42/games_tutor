@@ -30,6 +30,29 @@ COPY config/runtime.exs config/
 COPY rel rel
 RUN mix release
 
+# KataGo (real MIT-licensed Go engine) is not packaged for Debian/Ubuntu,
+# so it's fetched directly from its official GitHub release in its own
+# build stage (keeps curl/unzip out of the final runtime image). Generic
+# Eigen (CPU) build, not AVX2, for the same host-CPU-portability reason
+# Stockfish uses Debian's generic package rather than an AVX2-specific
+# binary -- see docs/KATAGO_ATTRIBUTION.md.
+#
+# This release build ships as a self-mounting AppImage, which needs FUSE
+# (unavailable in Docker -- confirmed the hard way: `katago version` fails
+# with "No suitable fusermount binary found"/"Cannot mount AppImage").
+# `--appimage-extract` unpacks its payload directly (no FUSE needed for
+# that), giving a real ELF binary plus its few bundled .so libs.
+FROM debian:${DEBIAN_VERSION} AS katago-fetch
+RUN apt-get update -y && apt-get install -y curl unzip ca-certificates \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+WORKDIR /katago
+RUN curl -sL -o katago.zip \
+      https://github.com/lightvector/KataGo/releases/download/v1.17.1/katago-v1.17.1-eigen-linux-x64.zip \
+    && unzip -o katago.zip -d . && rm katago.zip \
+    && chmod +x katago && ./katago --appimage-extract >/dev/null \
+    && curl -sL -o model.bin.gz \
+      https://katagoarchive.org/g170/neuralnets/g170-b6c96-s175395328-d26788732.bin.gz
+
 FROM debian:${DEBIAN_VERSION} AS runtime
 
 # stockfish -- real GPLv3 chess engine, run server-side as a UCI subprocess
@@ -44,9 +67,17 @@ ENV LC_ALL=en_US.UTF-8
 
 WORKDIR /app
 RUN useradd --create-home app
+
+COPY --from=katago-fetch /katago/squashfs-root/usr/bin/katago /usr/local/bin/katago
+COPY --from=katago-fetch /katago/squashfs-root/usr/lib/ /opt/katago/lib/
+COPY --from=katago-fetch /katago/model.bin.gz /opt/katago/model.bin.gz
+RUN chmod +x /usr/local/bin/katago
+ENV LD_LIBRARY_PATH=/opt/katago/lib
+
 USER app
 
 COPY --from=build --chown=app:app /app/_build/prod/rel/games_tutor ./
+COPY --chown=app:app priv/katago/analysis.cfg /opt/katago/analysis.cfg
 
 EXPOSE 8000
 

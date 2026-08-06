@@ -9,12 +9,15 @@ defmodule GamesTutor.SkillTest do
     user
   end
 
-  defp create_finished_game(user, losses) do
+  defp create_finished_game(user, losses, opts \\ []) do
+    game_type = Keyword.get(opts, :game_type, "chess")
+    opening_plies = Keyword.get(opts, :opening_plies, 10)
+
     {:ok, game} =
       %Game{}
       |> Game.create_changeset(%{
         user_id: user.id,
-        game_type: "chess",
+        game_type: game_type,
         is_calibration: true,
         started_at: DateTime.utc_now() |> DateTime.truncate(:second)
       })
@@ -23,7 +26,7 @@ defmodule GamesTutor.SkillTest do
     losses
     |> Enum.with_index(1)
     |> Enum.each(fn {loss, i} ->
-      ply = 10 + i * 2 - 1
+      ply = opening_plies + i * 2 - 1
 
       %Move{}
       |> Move.create_changeset(%{
@@ -87,5 +90,51 @@ defmodule GamesTutor.SkillTest do
     profile = Skill.get_or_init_profile(user, "chess", self_reported_elo: 1600)
     assert profile.estimated_rating == 1600.0
     assert profile.rating_sigma < 400.0
+  end
+
+  describe "Go calibration" do
+    test "strong (low score-loss) Go play creates a profile above the default prior with a kyu/dan label" do
+      user = register_user("gotest1@example.com")
+      # Centipoints -- see GamesTutor.Go.MoveClassifier. 50 = 0.5pt, "best".
+      game = create_finished_game(user, [50, 50, 50, 50, 50], game_type: "go", opening_plies: 4)
+
+      assert {:ok, profile} = Skill.record_calibration_result(game)
+      assert profile.game_type == "go"
+      assert profile.games_count == 1
+      assert profile.estimated_rating > 1200.0
+      assert profile.display_label =~ ~r/kyu|dan/
+    end
+
+    test "sloppy Go play (high score-loss) pulls the estimate down" do
+      user = register_user("gotest2@example.com")
+      game = create_finished_game(user, [3000, 3000, 3000, 3000, 3000], game_type: "go", opening_plies: 4)
+
+      assert {:ok, profile} = Skill.record_calibration_result(game)
+      assert profile.estimated_rating < 1200.0
+    end
+
+    test "chess and Go profiles for the same user are independent" do
+      user = register_user("gotest3@example.com")
+      chess_game = create_finished_game(user, [10, 10, 10, 10, 10], game_type: "chess", opening_plies: 10)
+      go_game = create_finished_game(user, [3000, 3000, 3000, 3000, 3000], game_type: "go", opening_plies: 4)
+
+      {:ok, chess_profile} = Skill.record_calibration_result(chess_game)
+      {:ok, go_profile} = Skill.record_calibration_result(go_game)
+
+      assert chess_profile.id != go_profile.id
+      assert chess_profile.estimated_rating > go_profile.estimated_rating
+      assert length(Skill.list_profiles(user)) == 2
+    end
+
+    test "Go's shorter opening exclusion (4 plies) counts moves chess's 10-ply exclusion would discard" do
+      user = register_user("gotest4@example.com")
+      # ply = 4 + i*2 - 1 for i in 1..3 => plies 5, 7, 9 -- all > 4 (Go's
+      # exclusion) but <= 10 (chess's), so this would be a no-op under
+      # chess's opening_plies default.
+      game = create_finished_game(user, [50, 50, 50], game_type: "go", opening_plies: 4)
+
+      assert {:ok, profile} = Skill.record_calibration_result(game)
+      assert profile.games_count == 1
+    end
   end
 end

@@ -16,9 +16,13 @@ export type Move = {
 
 export type GameSummary = {
   id: string;
-  game_type: string;
+  game_type: "chess" | "go";
   status: string;
   result: string | null;
+  // Which board color the human plays -- "white" in chess, "black" in Go
+  // (see GamesTutor.Games's moduledoc). Needed to interpret `result`
+  // ("white_wins"/"black_wins") as "you won" vs. "engine won".
+  human_color: "white" | "black";
   is_calibration: boolean;
   opponent_engine_config: Record<string, unknown>;
   started_at: string;
@@ -64,12 +68,20 @@ export async function listGames(): Promise<GameSummary[]> {
 }
 
 export async function createGame(
-  opts: { opponentElo?: number; isCalibration?: boolean; selfReportedElo?: number } = {}
+  opts: {
+    gameType?: "chess" | "go";
+    opponentElo?: number;
+    opponentMaxVisits?: number;
+    isCalibration?: boolean;
+    selfReportedElo?: number;
+  } = {}
 ): Promise<Game> {
   const res = await apiFetch("/api/games", {
     method: "POST",
     body: JSON.stringify({
+      game_type: opts.gameType ?? "chess",
       opponent_elo: opts.opponentElo,
+      opponent_max_visits: opts.opponentMaxVisits,
       is_calibration: opts.isCalibration ?? false,
       self_reported_elo: opts.selfReportedElo,
     }),

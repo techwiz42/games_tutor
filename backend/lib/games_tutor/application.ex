@@ -20,9 +20,9 @@ defmodule GamesTutor.Application do
       {DNSCluster, query: Application.get_env(:games_tutor, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: GamesTutor.PubSub},
       GamesTutor.Accounts.OAuthStateStore,
-      {Registry, keys: :unique, name: GamesTutor.Chess.GameRegistry},
-      {DynamicSupervisor, name: GamesTutor.Chess.GameSupervisor, strategy: :one_for_one},
-      {Task.Supervisor, name: GamesTutor.Chess.AnalysisTaskSupervisor},
+      {Registry, keys: :unique, name: GamesTutor.Games.GameRegistry},
+      {DynamicSupervisor, name: GamesTutor.Games.GameSupervisor, strategy: :one_for_one},
+      {Task.Supervisor, name: GamesTutor.Games.AnalysisTaskSupervisor},
       {Redix, host: redis_opts[:host], port: redis_opts[:port], name: GamesTutor.Redis},
       # Start to serve requests, typically the last entry
       GamesTutorWeb.Endpoint

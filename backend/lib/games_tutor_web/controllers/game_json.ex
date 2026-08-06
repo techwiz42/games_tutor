@@ -8,6 +8,11 @@ defmodule GamesTutorWeb.GameJSON do
       game_type: game.game_type,
       status: game.status,
       result: game.result,
+      # "white_wins"/"black_wins" name the literal board color that won --
+      # human_color tells the caller which color that is (White in chess,
+      # Black in Go), so displaying "did I win?" doesn't need to hardcode
+      # a game-type assumption.
+      human_color: Games.human_color(game),
       is_calibration: game.is_calibration,
       opponent_engine_config: game.opponent_engine_config,
       started_at: game.started_at,

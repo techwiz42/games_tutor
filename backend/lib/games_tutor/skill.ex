@@ -12,7 +12,7 @@ defmodule GamesTutor.Skill do
   alias GamesTutor.Repo
   alias GamesTutor.Accounts.User
   alias GamesTutor.Games.Move
-  alias GamesTutor.Skill.{Acpl, BayesianUpdate, RatingAnchorTable, SkillProfile, SkillProfileHistory}
+  alias GamesTutor.Skill.{Acpl, BayesianUpdate, GoRatingAnchorTable, RatingAnchorTable, SkillProfile, SkillProfileHistory}
 
   @default_prior_mu 1200.0
   @default_prior_sigma 400.0
@@ -20,7 +20,13 @@ defmodule GamesTutor.Skill do
   # signal, even if a rough/unverified one.
   @onboarding_prior_sigma 250.0
 
-  @labels [{1000, "Beginner"}, {1400, "Intermediate"}, {1800, "Advanced"}, {2200, "Strong"}]
+  @chess_labels [{1000, "Beginner"}, {1400, "Intermediate"}, {1800, "Advanced"}, {2200, "Strong"}]
+
+  # Go's opening (fuseki) is much shorter relative to a typical 9x9 game's
+  # total length than chess's opening theory is to a chess game -- chess's
+  # 10-ply exclusion would throw out a third of a short 9x9 game.
+  @chess_opening_plies 10
+  @go_opening_plies 4
 
   def get_profile(user, game_type) do
     Repo.get_by(SkillProfile, user_id: user.id, game_type: game_type)
@@ -48,7 +54,7 @@ defmodule GamesTutor.Skill do
         game_type: game_type,
         estimated_rating: mu,
         rating_sigma: sigma,
-        display_label: display_label(mu)
+        display_label: display_label(game_type, mu)
       })
       |> Repo.insert()
 
@@ -66,7 +72,7 @@ defmodule GamesTutor.Skill do
   def record_calibration_result(game) do
     moves = Repo.all(from(m in Move, where: m.game_id == ^game.id, order_by: m.ply))
 
-    case Acpl.compute(moves) do
+    case Acpl.compute(moves, opening_plies: opening_plies(game.game_type)) do
       {:error, :no_countable_moves} ->
         {:ok, nil}
 
@@ -74,7 +80,7 @@ defmodule GamesTutor.Skill do
         user = Repo.get!(User, game.user_id)
         profile = get_or_init_profile(user, game.game_type)
 
-        observed = RatingAnchorTable.acpl_to_elo(acpl)
+        observed = observed_rating(game.game_type, acpl)
         sigma_obs = BayesianUpdate.sigma_obs(losses)
 
         %{mu: mu_after, sigma: sigma_after} =
@@ -86,7 +92,7 @@ defmodule GamesTutor.Skill do
             |> SkillProfile.update_changeset(%{
               estimated_rating: mu_after,
               rating_sigma: sigma_after,
-              display_label: display_label(mu_after),
+              display_label: display_label(game.game_type, mu_after),
               games_count: profile.games_count + 1,
               last_played_at: DateTime.utc_now() |> DateTime.truncate(:second)
             })
@@ -112,7 +118,15 @@ defmodule GamesTutor.Skill do
     end
   end
 
-  defp display_label(rating) do
-    Enum.find_value(@labels, "Expert", fn {ceiling, label} -> if rating < ceiling, do: label end)
+  defp opening_plies("go"), do: @go_opening_plies
+  defp opening_plies(_chess), do: @chess_opening_plies
+
+  defp observed_rating("go", acpl), do: GoRatingAnchorTable.score_loss_to_rating(acpl)
+  defp observed_rating(_chess, acpl), do: RatingAnchorTable.acpl_to_elo(acpl)
+
+  defp display_label("go", rating), do: GoRatingAnchorTable.rating_to_label(rating)
+
+  defp display_label(_chess, rating) do
+    Enum.find_value(@chess_labels, "Expert", fn {ceiling, label} -> if rating < ceiling, do: label end)
   end
 end
