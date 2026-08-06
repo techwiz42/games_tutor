@@ -7,12 +7,20 @@ defmodule GamesTutor.Application do
 
   @impl true
   def start(_type, _args) do
+    # Binbo (the chess engine/board library) expects an explicit start call
+    # rather than auto-starting as an included application -- every example
+    # in its own docs calls binbo:start() before any other binbo function.
+    {:ok, _} = Application.ensure_all_started(:binbo)
+
     children = [
       GamesTutorWeb.Telemetry,
       GamesTutor.Repo,
       {DNSCluster, query: Application.get_env(:games_tutor, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: GamesTutor.PubSub},
       GamesTutor.Accounts.OAuthStateStore,
+      {Registry, keys: :unique, name: GamesTutor.Chess.GameRegistry},
+      {DynamicSupervisor, name: GamesTutor.Chess.GameSupervisor, strategy: :one_for_one},
+      {Task.Supervisor, name: GamesTutor.Chess.AnalysisTaskSupervisor},
       # Start to serve requests, typically the last entry
       GamesTutorWeb.Endpoint
     ]

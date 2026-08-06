@@ -30,6 +30,16 @@ defmodule GamesTutorWeb.Router do
     get "/me", AuthController, :me
   end
 
+  scope "/api/games", GamesTutorWeb do
+    pipe_through [:api, :authenticated]
+
+    get "/", GameController, :index
+    post "/", GameController, :create
+    get "/:id", GameController, :show
+    post "/:id/moves", GameController, :create_move
+    post "/:id/resign", GameController, :resign
+  end
+
   scope "/api", GamesTutorWeb do
     pipe_through :api
 

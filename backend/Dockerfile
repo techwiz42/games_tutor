@@ -32,7 +32,9 @@ RUN mix release
 
 FROM debian:${DEBIAN_VERSION} AS runtime
 
-RUN apt-get update -y && apt-get install -y libstdc++6 openssl libncurses5 locales ca-certificates \
+# stockfish -- real GPLv3 chess engine, run server-side as a UCI subprocess
+# only (never distributed to end-user devices); see docs/STOCKFISH_ATTRIBUTION.md.
+RUN apt-get update -y && apt-get install -y libstdc++6 openssl libncurses5 locales ca-certificates stockfish \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen
 

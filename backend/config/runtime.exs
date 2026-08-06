@@ -62,6 +62,10 @@ unless config_env() == :test do
     google_client_id: System.get_env("GOOGLE_CLIENT_ID"),
     google_client_secret: System.get_env("GOOGLE_CLIENT_SECRET")
 
+  config :games_tutor,
+    :stockfish_path,
+    System.get_env("STOCKFISH_PATH", "/usr/games/stockfish")
+
   # Swoosh's API client (Req) must be explicitly enabled to actually send over
   # HTTP -- the phx.new default disables it in dev (local mailbox preview only).
   config :swoosh, :api_client, Swoosh.ApiClient.Req

@@ -22,6 +22,18 @@ config :games_tutor, GamesTutorWeb.Endpoint,
 
 # In test we don't send emails
 config :games_tutor, GamesTutor.Mailer, adapter: Swoosh.Adapters.Test
+config :games_tutor, :frontend_base_url, "http://localhost:3020"
+config :games_tutor, :public_base_url, "http://localhost:4002"
+config :games_tutor, :mail_from, "pete@cyberiad.ai"
+
+config :games_tutor, GamesTutor.Guardian,
+  issuer: "games_tutor",
+  secret_key: "test-only-secret-key-not-used-in-any-real-environment"
+
+# Real stockfish binary -- integration tests run the actual engine (this
+# project's convention throughout has been no mocks), just at the fast end
+# of its options for test speed.
+config :games_tutor, :stockfish_path, System.get_env("STOCKFISH_PATH", "/usr/games/stockfish")
 
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false

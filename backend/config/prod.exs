@@ -8,7 +8,11 @@ config :games_tutor, GamesTutorWeb.Endpoint,
     rewrite_on: [:x_forwarded_proto],
     exclude: [
       # paths: ["/health"],
-      hosts: ["localhost", "127.0.0.1"]
+      # "backend" is the docker-compose internal service hostname the
+      # frontend's server-to-server proxy (next.config.ts's rewrites())
+      # talks to -- that traffic never leaves the docker network, so
+      # forcing https on it (there's no cert for it) just breaks the proxy.
+      hosts: ["localhost", "127.0.0.1", "backend"]
     ]
   ]
 

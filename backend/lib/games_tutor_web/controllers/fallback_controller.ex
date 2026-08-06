@@ -37,6 +37,18 @@ defmodule GamesTutorWeb.FallbackController do
     conn |> put_status(:unprocessable_entity) |> json(%{detail: "Invalid or expired token"})
   end
 
+  def call(conn, {:error, :not_found}) do
+    conn |> put_status(:not_found) |> json(%{detail: "Game not found"})
+  end
+
+  def call(conn, {:error, :illegal_move}) do
+    conn |> put_status(:unprocessable_entity) |> json(%{detail: "Illegal move", code: "illegal_move"})
+  end
+
+  def call(conn, {:error, :game_over}) do
+    conn |> put_status(:unprocessable_entity) |> json(%{detail: "Game is already over", code: "game_over"})
+  end
+
   def call(conn, {:error, %Ecto.Changeset{} = changeset}) do
     errors =
       Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->

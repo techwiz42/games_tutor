@@ -70,11 +70,14 @@ services:
     build:
       context: frontend
       dockerfile: Dockerfile
-    environment:
-      # Server-to-server proxy target (see frontend/next.config.ts's
-      # rewrites()) -- the docker network service name, not localhost, since
-      # frontend and backend are separate containers here.
-      BACKEND_INTERNAL_URL: http://backend:8000
+      args:
+        # Server-to-server proxy target (see frontend/next.config.ts's
+        # rewrites()) -- the docker network service name, not localhost,
+        # since frontend and backend are separate containers here. MUST be
+        # a build arg, not a runtime `environment:` var -- next build
+        # freezes rewrites() into the build output, next start never
+        # re-reads it (see frontend/Dockerfile's comment).
+        BACKEND_INTERNAL_URL: http://backend:8000
     ports:
       - "3020:3000"
     depends_on:
