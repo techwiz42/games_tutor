@@ -8,7 +8,8 @@ defmodule GamesTutorWeb.AuthController do
   action_fallback GamesTutorWeb.FallbackController
 
   def register(conn, params) do
-    with {:ok, _user} <- Accounts.register_user(params) do
+    with :ok <- check_ip_rate_limit(conn, "register", 5, 3600),
+         {:ok, _user} <- Accounts.register_user(params) do
       conn
       |> put_status(:created)
       |> json(%{message: "Registration successful. Check your email to confirm your account."})
@@ -16,10 +17,12 @@ defmodule GamesTutorWeb.AuthController do
   end
 
   def login(conn, %{"email" => email, "password" => password}) do
-    case Accounts.authenticate_user(email, password) do
-      {:ok, user} -> render_tokens(conn, user, :ok)
-      {:error, :not_confirmed} -> {:error, :not_confirmed}
-      {:error, :invalid_credentials} -> {:error, :invalid_credentials}
+    with :ok <- check_ip_rate_limit(conn, "login", 20, 900) do
+      case Accounts.authenticate_user(email, password) do
+        {:ok, user} -> render_tokens(conn, user, :ok)
+        {:error, :not_confirmed} -> {:error, :not_confirmed}
+        {:error, :invalid_credentials} -> {:error, :invalid_credentials}
+      end
     end
   end
 
@@ -65,15 +68,19 @@ defmodule GamesTutorWeb.AuthController do
   def confirm_email(_conn, _params), do: {:error, :bad_request}
 
   def resend_confirmation(conn, %{"email" => email}) do
-    :ok = Accounts.resend_confirmation(email)
-    json(conn, %{message: "If that account exists and isn't confirmed, a new confirmation email was sent."})
+    with :ok <- check_ip_rate_limit(conn, "resend_confirmation", 5, 3600) do
+      :ok = Accounts.resend_confirmation(email)
+      json(conn, %{message: "If that account exists and isn't confirmed, a new confirmation email was sent."})
+    end
   end
 
   def resend_confirmation(_conn, _params), do: {:error, :bad_request}
 
   def forgot_password(conn, %{"email" => email}) do
-    :ok = Accounts.deliver_password_reset(email)
-    json(conn, %{message: "If that email is registered, a password reset link has been sent."})
+    with :ok <- check_ip_rate_limit(conn, "forgot_password", 5, 3600) do
+      :ok = Accounts.deliver_password_reset(email)
+      json(conn, %{message: "If that email is registered, a password reset link has been sent."})
+    end
   end
 
   def forgot_password(_conn, _params), do: {:error, :bad_request}
@@ -133,6 +140,15 @@ defmodule GamesTutorWeb.AuthController do
   end
 
   ## Helpers
+
+  # IP-keyed (not email-keyed): rate-limiting a specific email address
+  # would let an attacker deliberately trip a *victim's* own limit and
+  # lock them out, a self-inflicted denial-of-service. IP-based bounds
+  # automated abuse from a single source without that risk.
+  defp check_ip_rate_limit(conn, bucket, max, window_seconds) do
+    ip = conn.remote_ip |> :inet.ntoa() |> to_string()
+    GamesTutor.RateLimit.check("ratelimit:#{bucket}:#{ip}", max, window_seconds)
+  end
 
   defp render_tokens(conn, user, status) do
     {:ok, refresh_token} = Accounts.issue_refresh_token(user, [])

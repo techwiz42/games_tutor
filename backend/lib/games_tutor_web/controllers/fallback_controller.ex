@@ -61,7 +61,7 @@ defmodule GamesTutorWeb.FallbackController do
   def call(conn, {:error, :rate_limited}) do
     conn
     |> put_status(:too_many_requests)
-    |> json(%{detail: "Too many voice sessions started recently -- try again later", code: "rate_limited"})
+    |> json(%{detail: "Too many requests -- try again later", code: "rate_limited"})
   end
 
   def call(conn, {:error, :session_already_active}) do

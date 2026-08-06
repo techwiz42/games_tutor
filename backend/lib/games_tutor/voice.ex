@@ -99,11 +99,7 @@ defmodule GamesTutor.Voice do
   ## Internal
 
   defp check_rate_limit(user) do
-    key = "voice:rate:#{user.id}"
-    {:ok, count} = Redix.command(GamesTutor.Redis, ["INCR", key])
-    if count == 1, do: Redix.command(GamesTutor.Redis, ["EXPIRE", key, to_string(@rate_limit_window_seconds)])
-
-    if count > @rate_limit_max_starts, do: {:error, :rate_limited}, else: :ok
+    GamesTutor.RateLimit.check("voice:rate:#{user.id}", @rate_limit_max_starts, @rate_limit_window_seconds)
   end
 
   defp acquire_active_session_guard(user) do
