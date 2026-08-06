@@ -6,8 +6,9 @@ tutor plays a calibration game against them — mostly silent, just gauging thei
 level of play — then tutors from that baseline in subsequent games using a real-time voice
 agent for spoken instruction.
 
-Status: **planning complete, implementation not started.** See
-[`docs/PLAN.md`](docs/PLAN.md) for the full design.
+Status: **live** at [games.cyberiad.ai](https://games.cyberiad.ai) -- all six of the plan's
+phases (scaffold/auth, chess, skill calibration, voice, Go, hardening) are built and
+deployed. See [`docs/PLAN.md`](docs/PLAN.md) for the full design and phase breakdown.
 
 ## What this is
 
@@ -25,28 +26,55 @@ Status: **planning complete, implementation not started.** See
   a spoken sidecar, not a control surface, to avoid legality-critical mis-hears.
 - **Authenticated by design.** Skill profiles, game history, and tutoring continuity all
   require a persistent user identity (email/password or Google OAuth).
+- **Moderation and admin.** Admin accounts (`User.is_admin`) get a user-list dashboard
+  (games played, chess rating, voice token spend per user) and can ban accounts; a banned
+  user is rejected on their very next request, not just their next login.
 
 ## Architecture at a glance
 
+Backend is Elixir/Phoenix, not the FastAPI backend originally planned -- switched early
+(see git history) once the plan's actual concurrency needs (one process per active game,
+each owning a real engine subprocess) turned out to map more directly onto OTP than onto
+async Python.
+
 ```
-backend/     FastAPI + async SQLAlchemy + Postgres + Alembic
-  auth/      JWT (rotated, hashed refresh tokens) + Google OAuth
-  voice/     OpenAI Realtime session minting + tool endpoints
-  models/    User, Game, Move, SkillProfile, VoiceSession, ...
-  api/       REST routers
-  games/     game orchestration (turn loop, calibration mode)
-  engines/   chess_adapter.py (Stockfish/UCI), go_adapter.py (KataGo)
-frontend/    Next.js + React — board UI (react-chessboard / Shudan), auth, voice hook
-migrations/  Alembic
-docker-compose.yml   backend + frontend + Postgres 16 + Redis
+backend/lib/games_tutor/
+  accounts/     auth (User, Google OAuth, hashed refresh tokens); accounts.ex is the
+                context (registration, login, OAuth linking, password reset, bans)
+  admin.ex      aggregated per-user stats (games, rating, voice spend) for the admin page
+  chess/        GameServer (one process per game, Stockfish via binbo/UCI), move
+                classification, post-game analysis
+  go/           GameServer (one process per game, KataGo over a raw JSON port protocol),
+                board state
+  skill/        ACPL, anchor tables, Bayesian skill-belief update, SkillProfile(+History)
+  voice/        OpenAI Realtime session minting + tool schemas/instructions
+  games.ex      Game/Move orchestration
+  rate_limit.ex shared Redis fixed-window limiter (auth, game creation, hints, voice)
+backend/lib/games_tutor_web/
+  controllers/    auth, game, skill_profile, user_settings, voice, admin, health
+  reject_banned.ex, require_admin.ex   auth-pipeline plugs enforcing bans / admin-only routes
+frontend/src/app/   Next.js App Router -- auth pages, dashboard, board UI
+                     (react-chessboard / Shudan), admin, attribution/terms/privacy
+docker-compose.yml       dev stack: backend + frontend + Postgres 16 + Redis
+docker-compose.prod.yml  production overrides (real domain, restart policy) --
+                         see docs/PLAN.md's Phase 6 for what "production" means here
 ```
 
-Full rationale for every one of these choices — including the OpenAI Realtime integration
-shape, the skill-calibration math, the database schema, and a phased build order with
-per-phase verification criteria — is in [`docs/PLAN.md`](docs/PLAN.md).
+Full rationale for the original design -- the OpenAI Realtime integration shape, the
+skill-calibration math, the database schema, and the phased build order with per-phase
+verification criteria -- is in [`docs/PLAN.md`](docs/PLAN.md). For how the system is
+actually built and deployed today (including the Python -> Elixir switch and a full
+component diagram), see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Engine attribution
+notices are in [`docs/STOCKFISH_ATTRIBUTION.md`](docs/STOCKFISH_ATTRIBUTION.md) and
+[`docs/KATAGO_ATTRIBUTION.md`](docs/KATAGO_ATTRIBUTION.md) (also surfaced in-app at
+`/attribution`).
 
 ## Status
 
-Nothing is implemented yet. The plan's Phase 0 (spikes: a minimal OpenAI Realtime voice
-connection, confirming Stockfish/KataGo strength-limiting behavior, measuring real KataGo
-latency on this hardware, and prototyping the Go board UI) is the next work.
+All six phases are built: auth/DB scaffold, a real Stockfish game loop, chess skill
+calibration ("rate my play"), real-time voice tutoring, Go via KataGo, and Phase 6
+hardening (rate limiting, engine/voice telemetry, a multi-game convergence check, a
+concurrent-load test of the engine process pool, attribution/terms/privacy pages, and the
+production deployment itself). Since then: an admin dashboard and account-ban support have
+been added. Known open item: no self-service account deletion or technical age-gate yet --
+see the Privacy Policy and Terms pages for how that's currently handled.
