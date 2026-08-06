@@ -7,7 +7,9 @@ RUN npm ci
 
 COPY . .
 
-ENV NEXT_PUBLIC_API_URL=http://localhost:8000
+# BACKEND_INTERNAL_URL (server-to-server proxy target for next.config.ts's
+# rewrites(), read at server start, not baked into the client bundle) is
+# passed as a runtime env var by docker-compose.yml, not set here.
 RUN npm run build
 
 EXPOSE 3000

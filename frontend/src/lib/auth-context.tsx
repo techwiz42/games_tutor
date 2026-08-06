@@ -53,7 +53,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.detail || "Login failed");
+        const err = new Error(body.detail || "Login failed") as Error & { code?: string };
+        err.code = body.code;
+        throw err;
       }
       const data = await res.json();
       setTokens(data.access_token, data.refresh_token);
@@ -62,23 +64,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [refreshUser]
   );
 
-  const register = useCallback(
-    async (email: string, password: string, displayName?: string) => {
-      const res = await fetch(`${API_URL}/api/auth/register`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, display_name: displayName || null }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.detail || "Registration failed");
-      }
-      const data = await res.json();
-      setTokens(data.access_token, data.refresh_token);
-      await refreshUser();
-    },
-    [refreshUser]
-  );
+  const register = useCallback(async (email: string, password: string, displayName?: string) => {
+    // Registration no longer returns tokens -- the account can't log in
+    // until the confirmation email's magic link is clicked. The caller
+    // (RegisterPage) shows a "check your email" screen instead of navigating
+    // to the dashboard.
+    const res = await fetch(`${API_URL}/api/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, display_name: displayName || null }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || "Registration failed");
+    }
+  }, []);
 
   const logout = useCallback(async () => {
     await apiLogout();

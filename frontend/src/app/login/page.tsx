@@ -11,20 +11,34 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [notConfirmed, setNotConfirmed] = useState(false);
+  const [resendSent, setResendSent] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setNotConfirmed(false);
     setSubmitting(true);
     try {
       await login(email, password);
       router.push("/dashboard");
     } catch (err) {
+      const code = (err as Error & { code?: string }).code;
+      setNotConfirmed(code === "not_confirmed");
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleResendConfirmation = async () => {
+    await fetch(`${API_URL}/api/auth/resend-confirmation`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    setResendSent(true);
   };
 
   const handleGoogleLogin = async () => {
@@ -52,6 +66,14 @@ export default function LoginPage() {
           required
         />
         {error && <p style={{ color: "red" }}>{error}</p>}
+        {notConfirmed &&
+          (resendSent ? (
+            <p>Confirmation email resent -- check your inbox.</p>
+          ) : (
+            <button type="button" onClick={handleResendConfirmation}>
+              Resend confirmation email
+            </button>
+          ))}
         <button type="submit" disabled={submitting}>
           {submitting ? "Logging in..." : "Log in"}
         </button>
@@ -60,6 +82,9 @@ export default function LoginPage() {
         Continue with Google
       </button>
       <p style={{ marginTop: 16 }}>
+        <a href="/forgot-password">Forgot password?</a>
+      </p>
+      <p style={{ marginTop: 8 }}>
         No account? <a href="/register">Register</a>
       </p>
     </div>

@@ -4,7 +4,11 @@
  * infinite retry loop if the refresh token itself is invalid/revoked).
  */
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Relative/same-origin -- Next.js proxies /api/* to the backend server-to-server
+// (see next.config.ts's rewrites()), so the browser never needs to know the
+// backend's own host/port at all. Robust regardless of what host/port the
+// frontend itself is served from.
+const API_URL = "";
 
 const ACCESS_TOKEN_KEY = "games_tutor_access_token";
 const REFRESH_TOKEN_KEY = "games_tutor_refresh_token";

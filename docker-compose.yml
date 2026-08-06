@@ -29,27 +29,32 @@ services:
 
   backend:
     build:
-      context: .
-      dockerfile: backend/Dockerfile
+      context: backend
+      dockerfile: Dockerfile
     environment:
       DB_HOST: postgres
       DB_NAME: games_tutor
       DB_USER: games_tutor
-      DATABASE_URL: postgresql+asyncpg://games_tutor@postgres:5432/games_tutor
-      REDIS_URL: redis://redis:6379/0
+      PHX_SERVER: "true"
+      # Overridden with the real public domain at actual deployment time (see
+      # secrets/README.md) -- these localhost defaults are for a portable
+      # local dev/docker-compose setup, not this specific droplet's domain.
       PUBLIC_BASE_URL: http://localhost:8000
       # Port 3000 is occupied by an unrelated pre-existing service on this host --
-      # games_tutor's frontend uses 3020 instead (see docker-compose.yml's frontend
-      # service ports mapping below; keep these two in sync).
+      # games_tutor's frontend uses 3020 instead (see the frontend service's
+      # ports mapping below; keep these two in sync).
       FRONTEND_BASE_URL: http://localhost:3020
+      MAIL_FROM: pete@cyberiad.ai
       APP_SECRET_KEY_FILE: /run/secrets/app_secret_key
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      SENDGRID_API_KEY_FILE: /run/secrets/sendgrid_api_key
       GOOGLE_CLIENT_ID_FILE: /run/secrets/google_client_id
       GOOGLE_CLIENT_SECRET_FILE: /run/secrets/google_client_secret
       OPENAI_API_KEY_FILE: /run/secrets/openai_api_key
     secrets:
       - app_secret_key
       - postgres_password
+      - sendgrid_api_key
       - google_client_id
       - google_client_secret
       - openai_api_key
@@ -66,7 +71,10 @@ services:
       context: frontend
       dockerfile: Dockerfile
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+      # Server-to-server proxy target (see frontend/next.config.ts's
+      # rewrites()) -- the docker network service name, not localhost, since
+      # frontend and backend are separate containers here.
+      BACKEND_INTERNAL_URL: http://backend:8000
     ports:
       - "3020:3000"
     depends_on:
@@ -77,6 +85,8 @@ secrets:
     file: ./secrets/postgres_password.txt
   app_secret_key:
     file: ./secrets/app_secret_key.txt
+  sendgrid_api_key:
+    file: ./secrets/sendgrid_api_key.txt
   google_client_id:
     file: ./secrets/google_client_id.txt
   google_client_secret:

@@ -1,17 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 
 export default function RegisterPage() {
   const { register } = useAuth();
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [registered, setRegistered] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -19,13 +18,28 @@ export default function RegisterPage() {
     setSubmitting(true);
     try {
       await register(email, password, displayName || undefined);
-      router.push("/dashboard");
+      setRegistered(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Registration failed");
     } finally {
       setSubmitting(false);
     }
   };
+
+  if (registered) {
+    return (
+      <div style={{ maxWidth: 400, margin: "80px auto", padding: 24, textAlign: "center" }}>
+        <h1>Check your email</h1>
+        <p>
+          We sent a confirmation link to <strong>{email}</strong>. Click it to activate your
+          account and log in.
+        </p>
+        <p style={{ marginTop: 16 }}>
+          <a href="/login">Back to login</a>
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div style={{ maxWidth: 360, margin: "80px auto", padding: 24 }}>
