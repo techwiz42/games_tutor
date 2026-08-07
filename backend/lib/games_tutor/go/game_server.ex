@@ -353,7 +353,8 @@ defmodule GamesTutor.Go.GameServer do
               eval_after: eval_after_human,
               loss: loss,
               engine_best_move: engine_best_move,
-              classification: Atom.to_string(MoveClassifier.classify(loss)),
+              classification: Atom.to_string(MoveClassifier.classify(loss, volatility_centipoints(state.last_analysis))),
+              classification_version: 2,
               think_time_ms: think_time_ms,
               prior: prior_for_move(state.last_analysis.policy, coord)
             }
@@ -425,7 +426,9 @@ defmodule GamesTutor.Go.GameServer do
               eval_after: eval_after_engine,
               loss: loss,
               engine_best_move: moved_state.last_analysis.best_move,
-              classification: Atom.to_string(MoveClassifier.classify(loss)),
+              classification:
+                Atom.to_string(MoveClassifier.classify(loss, volatility_centipoints(moved_state.last_analysis))),
+              classification_version: 2,
               think_time_ms: System.monotonic_time(:millisecond) - move_started_at,
               prior: prior_for_move(moved_state.last_analysis.policy, engine_coord)
             }
@@ -485,7 +488,8 @@ defmodule GamesTutor.Go.GameServer do
               eval_after: eval_after_engine,
               loss: loss,
               engine_best_move: state.last_analysis.best_move,
-              classification: Atom.to_string(MoveClassifier.classify(loss)),
+              classification: Atom.to_string(MoveClassifier.classify(loss, volatility_centipoints(state.last_analysis))),
+              classification_version: 2,
               think_time_ms: System.monotonic_time(:millisecond) - move_started_at,
               prior: prior_for_move(state.last_analysis.policy, engine_coord)
             }
@@ -659,6 +663,14 @@ defmodule GamesTutor.Go.GameServer do
   # table's integer eval/loss columns precise for Go's much smaller
   # natural-unit scale (sub-point differences matter a lot here).
   defp round_centipoints(points), do: round(points * 100)
+
+  # The pre-move position's scoreStdev, same cp scale as `loss`, for
+  # MoveClassifier.classify/2's volatility scaling. nil-safe: score_stdev
+  # can be nil (an :opponent_move-derived analysis never requests it --
+  # see maybe_include_ownership_and_policy/2), in which case classify/2
+  # falls back to the unscaled base thresholds rather than crashing.
+  defp volatility_centipoints(%{score_stdev: nil}), do: nil
+  defp volatility_centipoints(%{score_stdev: score_stdev}), do: round_centipoints(score_stdev)
 
   # Public (not `defp`) so board_test.exs-style pure unit tests can exercise
   # the scoring math directly with synthetic ownership arrays -- no live

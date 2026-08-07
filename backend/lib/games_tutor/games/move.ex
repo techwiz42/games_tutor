@@ -15,6 +15,14 @@ defmodule GamesTutor.Games.Move do
   a move the engine considered playing in the first place" (see
   GamesTutor.Voice.Tools). Nil for chess moves and for Go moves recorded
   before this field existed.
+
+  `classification_version` (Go only) distinguishes which threshold scheme
+  `classification` was computed under: nil for moves classified under
+  `GamesTutor.Go.MoveClassifier`'s original fixed centipoint thresholds,
+  `2` for the volatility-scaled thresholds that superseded them. Existing
+  rows aren't backfilled (the volatility figure the new thresholds need
+  wasn't captured historically) -- see the migration that added this
+  column.
   """
   use Ecto.Schema
   import Ecto.Changeset
@@ -39,6 +47,7 @@ defmodule GamesTutor.Games.Move do
     field :classification, :string
     field :think_time_ms, :integer
     field :prior, :float
+    field :classification_version, :integer
 
     timestamps(type: :utc_datetime, updated_at: false)
   end
@@ -58,7 +67,8 @@ defmodule GamesTutor.Games.Move do
       :engine_best_move,
       :classification,
       :think_time_ms,
-      :prior
+      :prior,
+      :classification_version
     ])
     |> validate_required([:game_id, :ply, :player, :notation, :uci, :fen_after])
     |> validate_inclusion(:player, @players)

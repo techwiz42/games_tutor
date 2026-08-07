@@ -67,6 +67,16 @@ defmodule GamesTutor.Go.GameServerTest do
     assert engine.uci == "pass" or engine.uci =~ ~r/^[A-Za-z]\d{1,2}$/
   end
 
+  test "a submitted move is classified under the volatility-scaled scheme (finding 3)" do
+    game_id = new_game_id()
+    {:ok, _pid} = GameServer.ensure_started(game_id, %{"max_visits" => 10})
+
+    assert {:ok, %{human_move: human}} = GameServer.submit_human_move(game_id, "E5")
+
+    assert human.classification_version == 2
+    assert human.classification in ~w(best good inaccuracy mistake blunder)
+  end
+
   test "a submitted move carries a real prior from the engine's policy network (finding 2)" do
     game_id = new_game_id()
     {:ok, _pid} = GameServer.ensure_started(game_id, %{"max_visits" => 10})
