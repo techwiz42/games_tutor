@@ -6,12 +6,26 @@ import { getBoardState, getMoveAnalysis, requestHint, updateExplanationDepth, li
 
 export type VoiceStatus = "idle" | "requesting-permission" | "connecting" | "connected" | "ended" | "error";
 
-// How long to wait after OpenAI reports a response done before actually
-// tearing down the connection -- response.done means generation finished
-// server-side, not that the last audio frames have finished draining out of
-// the <audio> element's playback buffer. Cutting the connection immediately
-// clips the last words of the explanation.
-const EXPLANATION_END_GRACE_MS = 1500;
+// response.done means the server finished GENERATING the response, not
+// that the browser has finished PLAYING its audio -- confirmed against
+// OpenAI's Realtime API community docs, not assumed: audio synthesis can
+// run well ahead of real-time, so response.done can fire while most of a
+// longer explanation's audio is still only queued for delivery. An
+// earlier version disconnected a fixed 1500ms after response.done, which
+// was nowhere near enough and clipped most of the explanation, not just
+// its last words. output_audio_buffer.stopped (WebRTC-only, undocumented
+// in the official API reference but confirmed live and in community
+// threads) is the real "the server has finished sending audio for this
+// response" signal; FINAL_ANSWER_GRACE_MS after THAT only needs to cover
+// the browser's own WebRTC jitter buffer draining what it already
+// received, not the whole utterance.
+const FINAL_ANSWER_GRACE_MS = 400;
+
+// Backstop only, in case output_audio_buffer.stopped never arrives for
+// some reason (e.g. a rare text-only turn with no synthesized audio) --
+// without this, awaitingFinalAudioRef would never clear and the session
+// would sit connected (mic hot) indefinitely instead of ending.
+const FINAL_ANSWER_FALLBACK_MS = 20_000;
 
 // dcRef.current flips to "open" slightly after `status` becomes "connected"
 // (WebRTC data-channel negotiation, not gated on anything this hook awaits) --
@@ -53,6 +67,12 @@ export function useRealtimeVoiceSession(gameId: string) {
   const sessionIdRef = useRef<string | null>(null);
   const maxDurationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True only once the FINAL response.done (no function_call -- the
+  // tutor's actual answer, not a tool-call round-trip) has landed. Gates
+  // the output_audio_buffer.stopped handler below so an EARLIER turn's
+  // own audio finishing (e.g. a spoken "let me check..." aside alongside
+  // a tool call) never triggers a disconnect -- only the final turn's.
+  const awaitingFinalAudioRef = useRef(false);
   // Populated once `disconnect` exists (see the effect right after its
   // definition) -- handleDataChannelMessage needs to call it from inside a
   // response.done handler defined earlier in the file, without making
@@ -173,9 +193,24 @@ export function useRealtimeVoiceSession(gameId: string) {
             // response.create above, which yields its own later
             // response.done. This is meant to be one grounded explanation,
             // not an open conversation (see tools.ex's tutoring
-            // instructions), so end the session once it lands rather than
-            // sitting connected/listening.
-            autoStopTimerRef.current = setTimeout(() => disconnectRef.current(), EXPLANATION_END_GRACE_MS);
+            // instructions), so the session should end once it's actually
+            // finished playing -- but NOT here: see
+            // output_audio_buffer.stopped below and FINAL_ANSWER_GRACE_MS's
+            // comment for why reacting to response.done itself clipped most
+            // of the explanation instead of just its last words.
+            awaitingFinalAudioRef.current = true;
+            autoStopTimerRef.current = setTimeout(() => {
+              if (awaitingFinalAudioRef.current) disconnectRef.current();
+            }, FINAL_ANSWER_FALLBACK_MS);
+          }
+          break;
+        }
+
+        case "output_audio_buffer.stopped": {
+          if (awaitingFinalAudioRef.current) {
+            awaitingFinalAudioRef.current = false;
+            if (autoStopTimerRef.current) clearTimeout(autoStopTimerRef.current);
+            autoStopTimerRef.current = setTimeout(() => disconnectRef.current(), FINAL_ANSWER_GRACE_MS);
           }
           break;
         }
@@ -256,11 +291,13 @@ export function useRealtimeVoiceSession(gameId: string) {
   }, [reportFatalError]);
 
   // The Stop button's action -- unlike the automatic end-of-explanation
-  // disconnect above (which waits EXPLANATION_END_GRACE_MS to avoid clipping
-  // trailing audio), this is a deliberate interrupt: cancel any pending
-  // auto-stop, tell OpenAI to stop generating right away, then tear down
-  // immediately rather than waiting for anything to finish.
+  // disconnect above (which waits for output_audio_buffer.stopped, plus a
+  // short FINAL_ANSWER_GRACE_MS, to avoid clipping trailing audio), this is
+  // a deliberate interrupt: cancel any pending auto-stop, tell OpenAI to
+  // stop generating right away, then tear down immediately rather than
+  // waiting for anything to finish.
   const stop = useCallback(() => {
+    awaitingFinalAudioRef.current = false;
     if (autoStopTimerRef.current) {
       clearTimeout(autoStopTimerRef.current);
       autoStopTimerRef.current = null;
@@ -292,6 +329,7 @@ export function useRealtimeVoiceSession(gameId: string) {
   const connect = useCallback(async () => {
     setError(null);
     totalTokensRef.current = 0;
+    awaitingFinalAudioRef.current = false;
     setStatus("requesting-permission");
 
     let stream: MediaStream;
