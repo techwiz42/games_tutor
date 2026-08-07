@@ -26,17 +26,11 @@ export const authButtonPrimary =
   "w-full rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 " +
   "disabled:opacity-50 disabled:cursor-not-allowed transition-colors";
 
-export const authButtonSecondary =
-  "w-full rounded-lg border border-zinc-300 dark:border-zinc-700 px-4 py-2 text-sm font-medium " +
-  "text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors";
-
 export const authLink = "text-indigo-600 dark:text-indigo-400 hover:underline";
 
 export const authError =
   "rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 " +
   "px-3 py-2 text-sm text-red-700 dark:text-red-400";
-
-export const authDivider = "flex items-center gap-3 my-5 text-xs text-zinc-400 dark:text-zinc-500";
 
 // ---- App-wide (dashboard / games list / game detail) ----
 
@@ -60,9 +54,9 @@ export const mutedText = "text-sm text-zinc-500 dark:text-zinc-400";
 
 export const pageTitle = "text-2xl font-semibold text-zinc-900 dark:text-zinc-50 mb-6";
 
-// Non-full-width sibling of authButtonPrimary/authButtonSecondary -- those
-// are `w-full` (right for a stacked auth form), these are for inline
-// button groups (game actions, new-game controls).
+// Non-full-width sibling of authButtonPrimary -- that's `w-full` (right for
+// a stacked auth form), these are for inline button groups (game actions,
+// new-game controls).
 export const buttonPrimary =
   "rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 " +
   "disabled:opacity-50 disabled:cursor-not-allowed transition-colors";

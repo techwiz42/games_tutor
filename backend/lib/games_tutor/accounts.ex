@@ -23,10 +23,6 @@ defmodule GamesTutor.Accounts do
     Repo.get_by(User, email: String.downcase(email))
   end
 
-  def get_user_by_google_id(google_id) do
-    Repo.get_by(User, google_id: google_id)
-  end
-
   @doc """
   Registers a user and sends a confirmation email. Does NOT issue tokens --
   the account can't log in until confirmed (see `authenticate_user/2`).
@@ -185,55 +181,6 @@ defmodule GamesTutor.Accounts do
       end
     end)
   end
-
-  ## Google OAuth
-
-  @doc """
-  Finds or creates a user from verified Google id_token claims. Google-verified
-  accounts are auto-confirmed -- Google already verified the email, no need
-  for a separate confirmation email. Links to an existing password account
-  with the same email if one exists, rather than creating a duplicate.
-  """
-  def find_or_create_from_google(%{"sub" => sub, "email" => email} = claims, ip \\ nil) do
-    cond do
-      user = get_user_by_google_id(sub) ->
-        if User.banned?(user), do: {:error, :banned}, else: {:ok, record_login(user, ip)}
-
-      user = get_user_by_email(email) ->
-        if User.banned?(user) do
-          {:error, :banned}
-        else
-          user
-          |> User.link_google_changeset(%{google_id: sub, avatar_url: claims["picture"]})
-          |> Repo.update()
-          |> case do
-            {:ok, user} -> {:ok, auto_confirm_if_needed(user) |> record_login(ip)}
-            error -> error
-          end
-        end
-
-      true ->
-        %User{}
-        |> User.google_changeset(%{
-          email: email,
-          google_id: sub,
-          display_name: claims["name"],
-          avatar_url: claims["picture"]
-        })
-        |> Repo.update()
-        |> case do
-          {:ok, user} -> {:ok, auto_confirm_if_needed(user) |> record_login(ip)}
-          error -> error
-        end
-    end
-  end
-
-  defp auto_confirm_if_needed(%User{confirmed_at: nil} = user) do
-    {:ok, user} = user |> User.confirm_changeset() |> Repo.update()
-    user
-  end
-
-  defp auto_confirm_if_needed(user), do: user
 
   ## Moderation
 

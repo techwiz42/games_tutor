@@ -1,8 +1,6 @@
 defmodule GamesTutor.Accounts.User do
   @moduledoc """
-  Email is the username -- there is no separate username field. Supports both
-  password and Google SSO (either alone is enough: hashed_password and
-  google_id are both nullable), matching the prior design.
+  Email is the username -- there is no separate username field.
   """
   use Ecto.Schema
   import Ecto.Changeset
@@ -14,9 +12,7 @@ defmodule GamesTutor.Accounts.User do
     field :email, :string
     field :hashed_password, :string
     field :password, :string, virtual: true, redact: true
-    field :google_id, :string
     field :display_name, :string
-    field :avatar_url, :string
     field :confirmed_at, :utc_datetime
     field :last_login_at, :utc_datetime
     field :last_login_ip, :string
@@ -35,23 +31,6 @@ defmodule GamesTutor.Accounts.User do
     |> validate_email()
     |> validate_password()
     |> put_hashed_password()
-  end
-
-  @doc "Account created/linked via Google OAuth -- no password required."
-  def google_changeset(user, attrs) do
-    user
-    |> cast(attrs, [:email, :google_id, :display_name, :avatar_url])
-    |> validate_required([:email, :google_id])
-    |> validate_email()
-    |> unique_constraint(:google_id)
-  end
-
-  @doc "Link an existing (password) account to a Google identity."
-  def link_google_changeset(user, attrs) do
-    user
-    |> cast(attrs, [:google_id, :avatar_url])
-    |> validate_required([:google_id])
-    |> unique_constraint(:google_id)
   end
 
   def confirm_changeset(user) do

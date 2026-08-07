@@ -2,7 +2,6 @@ defmodule GamesTutorWeb.AuthController do
   use GamesTutorWeb, :controller
 
   alias GamesTutor.Accounts
-  alias GamesTutor.Accounts.Google
   alias GamesTutor.Guardian
 
   action_fallback GamesTutorWeb.FallbackController
@@ -101,48 +100,6 @@ defmodule GamesTutorWeb.AuthController do
 
   def reset_password(_conn, _params), do: {:error, :bad_request}
 
-  def google_authorize(conn, _params) do
-    state = Google.generate_state_token()
-    Accounts.OAuthStateStore.put(state)
-    json(conn, %{authorization_url: Google.build_authorization_url(state)})
-  end
-
-  def google_callback(conn, %{"code" => code, "state" => state}) do
-    frontend_url = Application.fetch_env!(:games_tutor, :frontend_base_url)
-
-    if Accounts.OAuthStateStore.consume(state) do
-      case Google.exchange_code_for_user_info(code) do
-        {:ok, claims} ->
-          case Accounts.find_or_create_from_google(claims, client_ip(conn)) do
-            {:ok, user} ->
-              access_token = Guardian.issue_access_token(user)
-              {:ok, refresh_token} = Accounts.issue_refresh_token(user, [])
-
-              redirect(conn,
-                external:
-                  "#{frontend_url}/auth/callback#access_token=#{access_token}&refresh_token=#{refresh_token}"
-              )
-
-            {:error, :banned} ->
-              redirect(conn, external: "#{frontend_url}/login?error=banned")
-
-            {:error, _changeset} ->
-              redirect(conn, external: "#{frontend_url}/login?error=google_account_error")
-          end
-
-        {:error, _reason} ->
-          redirect(conn, external: "#{frontend_url}/login?error=google_auth_failed")
-      end
-    else
-      redirect(conn, external: "#{frontend_url}/login?error=invalid_state")
-    end
-  end
-
-  def google_callback(conn, _params) do
-    frontend_url = Application.fetch_env!(:games_tutor, :frontend_base_url)
-    redirect(conn, external: "#{frontend_url}/login?error=google_auth_failed")
-  end
-
   ## Helpers
 
   # IP-keyed (not email-keyed): rate-limiting a specific email address
@@ -184,11 +141,9 @@ defmodule GamesTutorWeb.AuthController do
       id: user.id,
       email: user.email,
       display_name: user.display_name,
-      avatar_url: user.avatar_url,
       created_at: user.inserted_at,
       confirmed: not is_nil(user.confirmed_at),
       has_password: not is_nil(user.hashed_password),
-      has_google: not is_nil(user.google_id),
       is_admin: user.is_admin
     })
   end

@@ -28,7 +28,7 @@ export default function PrivacyPage() {
       <ul>
         <li>
           <strong>Account info:</strong> your email address and a hashed (never plain-text)
-          password, or your Google account identifier/name/avatar if you sign in with Google.
+          password.
         </li>
         <li>
           <strong>Game data:</strong> every move you play, the engine&apos;s evaluation of each
@@ -81,10 +81,6 @@ export default function PrivacyPage() {
         <li>
           <strong>SendGrid</strong> -- to deliver transactional email (confirmation, password
           reset).
-        </li>
-        <li>
-          <strong>Google</strong> -- only if you choose to sign in with Google, in which case
-          Google is the identity provider for that login.
         </li>
       </ul>
       <p>We do not sell your data, and we don&apos;t share it with anyone else.</p>

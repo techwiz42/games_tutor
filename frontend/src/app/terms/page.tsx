@@ -43,8 +43,7 @@ export default function TermsPage() {
       <h2>3. Your account</h2>
       <p>
         You&apos;re responsible for keeping your login credentials secure and for all activity
-        under your account. You can sign up with an email/password or with Google. We store
-        passwords hashed, never in plain text.
+        under your account. We store passwords hashed, never in plain text.
       </p>
 
       <h2>4. Acceptable use</h2>
@@ -69,7 +68,7 @@ export default function TermsPage() {
       <p>
         Chess and Go analysis is provided by Stockfish (GPLv3) and KataGo (MIT), running on our
         servers -- see <a href="/attribution">Attribution</a> for licenses and details.
-        Transactional email is sent via SendGrid. Optional sign-in is provided via Google OAuth.
+        Transactional email is sent via SendGrid.
       </p>
 
       <h2>7. No warranty</h2>

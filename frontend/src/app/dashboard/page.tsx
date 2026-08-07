@@ -4,13 +4,6 @@ import { ProtectedRoute } from "@/lib/protected-route";
 import { useAuth } from "@/lib/auth-context";
 import { pageWrap, navBar, navBrand, navBrandAccent, card, buttonPrimary, buttonSecondary, mutedText, linkButton } from "@/lib/auth-ui";
 
-function accountLabel(user: { has_password?: boolean; has_google?: boolean }): string {
-  if (user.has_password && user.has_google) return "Password + Google";
-  if (user.has_google) return "Google";
-  if (user.has_password) return "Password";
-  return "";
-}
-
 function DashboardContent() {
   const { user, logout } = useAuth();
 
@@ -41,11 +34,6 @@ function DashboardContent() {
               </a>
             )}
           </div>
-        </section>
-
-        <section className={card}>
-          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50 mb-2">Account</h2>
-          <p className={mutedText}>{accountLabel(user ?? {})}</p>
         </section>
 
         <section className={card}>

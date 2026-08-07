@@ -25,8 +25,6 @@ defmodule GamesTutorWeb.Router do
     post "/resend-confirmation", AuthController, :resend_confirmation
     post "/forgot-password", AuthController, :forgot_password
     post "/reset-password", AuthController, :reset_password
-    get "/google/authorize", AuthController, :google_authorize
-    get "/google/callback", AuthController, :google_callback
   end
 
   scope "/api/auth", GamesTutorWeb do

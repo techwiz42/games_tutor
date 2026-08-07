@@ -19,7 +19,6 @@ defmodule GamesTutor.Application do
       GamesTutor.Repo,
       {DNSCluster, query: Application.get_env(:games_tutor, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: GamesTutor.PubSub},
-      GamesTutor.Accounts.OAuthStateStore,
       {Registry, keys: :unique, name: GamesTutor.Games.GameRegistry},
       {DynamicSupervisor, name: GamesTutor.Games.GameSupervisor, strategy: :one_for_one},
       {Task.Supervisor, name: GamesTutor.Games.AnalysisTaskSupervisor},

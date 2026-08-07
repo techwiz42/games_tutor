@@ -12,10 +12,8 @@ import {
   authSubtitle,
   authInput,
   authButtonPrimary,
-  authButtonSecondary,
   authLink,
   authError,
-  authDivider,
 } from "@/lib/auth-ui";
 
 export default function LoginPage() {
@@ -52,12 +50,6 @@ export default function LoginPage() {
       body: JSON.stringify({ email }),
     });
     setResendSent(true);
-  };
-
-  const handleGoogleLogin = async () => {
-    const res = await fetch(`${API_URL}/api/auth/google/authorize`);
-    const data = await res.json();
-    window.location.href = data.authorization_url;
   };
 
   return (
@@ -103,16 +95,6 @@ export default function LoginPage() {
             {submitting ? "Logging in..." : "Log in"}
           </button>
         </form>
-
-        <div className={authDivider}>
-          <span className="flex-1 border-t border-zinc-200 dark:border-zinc-800" />
-          or
-          <span className="flex-1 border-t border-zinc-200 dark:border-zinc-800" />
-        </div>
-
-        <button onClick={handleGoogleLogin} className={authButtonSecondary}>
-          Continue with Google
-        </button>
 
         <p className="mt-6 text-center text-sm text-zinc-500 dark:text-zinc-400">
           <a href="/forgot-password" className={authLink}>
