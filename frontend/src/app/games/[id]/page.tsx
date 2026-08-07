@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { Chessboard } from "react-chessboard";
@@ -132,12 +132,22 @@ function GameContent() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const voice = useRealtimeVoiceSession(id);
+  const movesScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     getGame(id)
       .then(setGame)
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load game"));
   }, [id]);
+
+  // Keep the most recent move in view as the game grows, rather than
+  // requiring a scroll every move -- the moves panel below has a fixed
+  // height (see its className) specifically so this scrolls the panel
+  // itself, not the whole page.
+  useEffect(() => {
+    const el = movesScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [game?.moves.length]);
 
   const submitMoveAndUpdate = useCallback(
     (moveStr: string) => {
@@ -282,16 +292,16 @@ function GameContent() {
 
         <div className={card}>
           <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50 mb-3">Moves</h3>
-          <div className="overflow-x-auto">
+          <div ref={movesScrollRef} className="max-h-96 overflow-y-auto overflow-x-auto">
             <table className="w-full text-sm border-collapse">
               <thead>
                 <tr className={`text-left ${mutedText}`}>
-                  <th className="px-2 py-1 font-medium">#</th>
-                  <th className="px-2 py-1 font-medium">By</th>
-                  <th className="px-2 py-1 font-medium">Move</th>
-                  <th className="px-2 py-1 font-medium">Quality</th>
-                  <th className="px-2 py-1 font-medium">Loss</th>
-                  <th className="px-2 py-1 font-medium"></th>
+                  <th className="sticky top-0 bg-white dark:bg-zinc-900 px-2 py-1 font-medium">#</th>
+                  <th className="sticky top-0 bg-white dark:bg-zinc-900 px-2 py-1 font-medium">By</th>
+                  <th className="sticky top-0 bg-white dark:bg-zinc-900 px-2 py-1 font-medium">Move</th>
+                  <th className="sticky top-0 bg-white dark:bg-zinc-900 px-2 py-1 font-medium">Quality</th>
+                  <th className="sticky top-0 bg-white dark:bg-zinc-900 px-2 py-1 font-medium">Loss</th>
+                  <th className="sticky top-0 bg-white dark:bg-zinc-900 px-2 py-1 font-medium"></th>
                 </tr>
               </thead>
               <tbody>
