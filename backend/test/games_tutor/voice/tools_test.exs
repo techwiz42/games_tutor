@@ -70,4 +70,16 @@ defmodule GamesTutor.Voice.ToolsTest do
     text = Tools.instructions("tutoring", "chess")
     assert text =~ "not an open-ended conversation"
   end
+
+  test "Go tutoring instructions explain the prior signal (finding 2); chess's don't (no prior on chess moves)" do
+    assert Tools.instructions("tutoring", "go") =~ "prior"
+    refute Tools.instructions("tutoring", "chess") =~ "prior"
+  end
+
+  test "get_last_move_analysis and explain_move descriptions mention prior" do
+    for name <- ["get_last_move_analysis", "explain_move"] do
+      tool = Tools.schema("go") |> Enum.find(&(&1.name == name))
+      assert tool.description =~ "prior"
+    end
+  end
 end

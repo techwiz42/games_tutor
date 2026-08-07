@@ -31,15 +31,19 @@ defmodule GamesTutor.Voice.Tools do
         name: "get_last_move_analysis",
         description:
           "Get the engine's quality assessment (best/good/inaccuracy/mistake/blunder) of the most " <>
-            "recently played move. Cheap -- pre-computed when the move was made, not a live engine call.",
+            "recently played move, including (Go only) `prior`, the engine's own probability of " <>
+            "playing this exact move -- a near-zero prior means the move wasn't a real candidate " <>
+            "for the engine at all, distinct from how many points it lost. Cheap -- pre-computed " <>
+            "when the move was made, not a live engine call.",
         parameters: %{type: "object", properties: %{}, required: []}
       },
       %{
         type: "function",
         name: "explain_move",
         description:
-          "Get the engine's quality assessment of a specific past move by its move number (ply), so you " <>
-            "can explain why a particular move was good or bad. Omit ply to explain the most recent move.",
+          "Get the engine's quality assessment (including, for Go, `prior`) of a specific past move " <>
+            "by its move number (ply), so you can explain why a particular move was good or bad. " <>
+            "Omit ply to explain the most recent move.",
         parameters: %{
           type: "object",
           properties: %{
@@ -104,7 +108,7 @@ defmodule GamesTutor.Voice.Tools do
     finish speaking, so don't end on a question expecting a spoken reply, and don't volunteer
     commentary on other moves or anything else the player didn't ask about.
 
-    Ground everything you say in real engine output, never invented chess analysis. Call
+    Ground everything you say in real engine output, never invented #{game_type} analysis. Call
     explain_move (or get_last_move_analysis for the most recent move) and base your explanation
     strictly on what it returns: eval_before, eval_after, loss, engine_best_move, and
     classification. If you name a better move, it must be that exact engine_best_move -- never a
@@ -112,12 +116,34 @@ defmodule GamesTutor.Voice.Tools do
     say so plainly rather than guessing or inventing a plausible-sounding answer. Use
     get_board_state for current position context and get_skill_profile if the player's overall
     rating is relevant; use request_hint or adjust_explanation_depth only if explicitly asked.
-
+    #{prior_guidance(game_type)}
     Keep it conversational and concise -- a sentence or two, not a lecture -- while staying
     concrete: cite the actual centipawn loss and the actual engine_best_move from the tool data,
     not vague praise or criticism.
     """
   end
+
+  # Go-only: `prior` (the engine's own pre-move probability of playing this
+  # exact move, 0.0-1.0) is a qualitatively different signal from loss --
+  # a move can lose few points AND have near-zero prior (a move the engine
+  # would essentially never consider, that happened not to cost much), or
+  # lose a lot with a high prior (a reasonable idea that just didn't pan
+  # out). Chess has no equivalent (prior is always nil on chess moves), so
+  # this paragraph only applies there.
+  defp prior_guidance("go") do
+    """
+
+    Also check `prior`: it's the engine's own probability of choosing this exact move (0.0-1.0),
+    a different question from how many points it lost. A low loss with a very low prior means the
+    move happened not to cost much, but isn't one the engine would play or considered a real
+    candidate -- say that plainly ("not a move it was considering," not "a small mistake"), rather
+    than only describing the point loss. Don't over-index on prior for moves the engine rates
+    :best or :good -- it's most informative for explaining WHY an inaccuracy/mistake/blunder
+    happened, not for re-litigating a fine move.
+    """
+  end
+
+  defp prior_guidance(_chess), do: ""
 
   defp legality_example("go"), do: "is it legal for me to play here?"
   defp legality_example(_chess), do: "can I castle here?"
