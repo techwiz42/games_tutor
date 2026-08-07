@@ -24,6 +24,8 @@ RUN mix deps.compile
 
 COPY priv priv
 COPY lib lib
+COPY c_src c_src
+COPY Makefile Makefile
 
 RUN mix compile
 COPY config/runtime.exs config/
@@ -42,6 +44,14 @@ RUN mix release
 # with "No suitable fusermount binary found"/"Cannot mount AppImage").
 # `--appimage-extract` unpacks its payload directly (no FUSE needed for
 # that), giving a real ELF binary plus its few bundled .so libs.
+#
+# Two nets are baked in, not just the default -- see docs/PLAN.md's Phase 2
+# findings: b10c128e (measured ~2.3-2.4x the CPU/wall-clock cost of b6c96
+# at production visit budgets, for meaningfully more confident/accurate
+# evaluations) is a real, deliberate tradeoff against this droplet's CPU
+# budget, not a silent swap. KATAGO_MODEL_PATH (already an env var, see
+# config/runtime.exs) picks between them at container start -- no rebuild
+# needed to switch.
 FROM debian:${DEBIAN_VERSION} AS katago-fetch
 RUN apt-get update -y && apt-get install -y curl unzip ca-certificates \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -50,8 +60,11 @@ RUN curl -sL -o katago.zip \
       https://github.com/lightvector/KataGo/releases/download/v1.17.1/katago-v1.17.1-eigen-linux-x64.zip \
     && unzip -o katago.zip -d . && rm katago.zip \
     && chmod +x katago && ./katago --appimage-extract >/dev/null \
-    && curl -sL -o model.bin.gz \
-      https://katagoarchive.org/g170/neuralnets/g170-b6c96-s175395328-d26788732.bin.gz
+    && mkdir models \
+    && curl -sL -o models/b6c96.bin.gz \
+      https://katagoarchive.org/g170/neuralnets/g170-b6c96-s175395328-d26788732.bin.gz \
+    && curl -sL -o models/b10c128e.bin.gz \
+      https://katagoarchive.org/g170/neuralnets/g170e-b10c128-s1141046784-d204142634.bin.gz
 
 FROM debian:${DEBIAN_VERSION} AS runtime
 
@@ -70,9 +83,13 @@ RUN useradd --create-home app
 
 COPY --from=katago-fetch /katago/squashfs-root/usr/bin/katago /usr/local/bin/katago
 COPY --from=katago-fetch /katago/squashfs-root/usr/lib/ /opt/katago/lib/
-COPY --from=katago-fetch /katago/model.bin.gz /opt/katago/model.bin.gz
+COPY --from=katago-fetch /katago/models/ /opt/katago/models/
 RUN chmod +x /usr/local/bin/katago
 ENV LD_LIBRARY_PATH=/opt/katago/lib
+# Default net -- override at container start with KATAGO_MODEL_PATH=/opt/katago/models/b10c128e.bin.gz
+# to opt into the stronger/slower net (see the katago-fetch stage's comment
+# and docs/PLAN.md's Phase 2 findings). No rebuild needed either way.
+ENV KATAGO_MODEL_PATH=/opt/katago/models/b6c96.bin.gz
 
 USER app
 

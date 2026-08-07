@@ -62,9 +62,14 @@ unless config_env() == :test do
     :stockfish_path,
     System.get_env("STOCKFISH_PATH", "/usr/games/stockfish")
 
+  # KATAGO_MODEL_PATH picks between the two nets baked into the image (see
+  # backend/Dockerfile's katago-fetch stage and docs/PLAN.md's Phase 2
+  # findings) -- switchable at container start, no rebuild needed. The
+  # Dockerfile itself sets this env var to the default (b6c96); the
+  # fallback here only matters when running the release outside that image.
   config :games_tutor, :katago,
     path: System.get_env("KATAGO_PATH", "/usr/local/bin/katago"),
-    model_path: System.get_env("KATAGO_MODEL_PATH", "/opt/katago/model.bin.gz"),
+    model_path: System.get_env("KATAGO_MODEL_PATH", "/opt/katago/models/b6c96.bin.gz"),
     config_path: System.get_env("KATAGO_CONFIG_PATH", "/opt/katago/analysis.cfg")
 
   config :games_tutor, :openai_api_key, Secrets.read("OPENAI_API_KEY")

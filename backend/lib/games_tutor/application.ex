@@ -23,6 +23,10 @@ defmodule GamesTutor.Application do
       {DynamicSupervisor, name: GamesTutor.Games.GameSupervisor, strategy: :one_for_one},
       {Task.Supervisor, name: GamesTutor.Games.AnalysisTaskSupervisor},
       {Redix, host: redis_opts[:host], port: redis_opts[:port], name: GamesTutor.Redis},
+      # The single shared KataGo process every Go game queries -- see
+      # GamesTutor.Go.Engine's moduledoc. Started before the Endpoint so
+      # it's ready before any request can reach a GameServer.
+      GamesTutor.Go.Engine.Supervisor,
       # Start to serve requests, typically the last entry
       GamesTutorWeb.Endpoint
     ]

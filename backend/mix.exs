@@ -10,6 +10,9 @@ defmodule GamesTutor.MixProject do
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       deps: deps(),
+      # :elixir_make builds priv/pdeathsig_wrapper (see c_src/ and
+      # GamesTutor.Go.Engine's moduledoc) from its Makefile.
+      compilers: [:elixir_make] ++ Mix.compilers(),
       listeners: [Phoenix.CodeReloader]
     ]
   end
@@ -56,7 +59,8 @@ defmodule GamesTutor.MixProject do
       {:guardian, "~> 2.3"},
       {:cors_plug, "~> 3.0"},
       {:binbo, "~> 4.0"},
-      {:redix, "~> 1.5"}
+      {:redix, "~> 1.5"},
+      {:elixir_make, "~> 0.9", runtime: false}
     ]
   end
 

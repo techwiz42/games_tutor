@@ -25,3 +25,7 @@ erl_crash.dump
 # Ignore package tarball (built via "mix hex.build").
 games_tutor-*.tar
 
+# Compiled by :elixir_make (see Makefile / c_src/) -- platform-specific,
+# rebuilt automatically by `mix compile`.
+/priv/pdeathsig_wrapper
+

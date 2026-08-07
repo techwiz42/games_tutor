@@ -1,9 +1,12 @@
 defmodule GamesTutor.Go.GameServer do
   @moduledoc """
-  One process per active Go game, owning a single real KataGo analysis-
-  engine subprocess (a raw Elixir `Port` -- there's no Go equivalent of
-  binbo, so this module hand-rolls the newline-delimited JSON
-  request/response protocol KataGo's `analysis` mode speaks).
+  One process per active Go game, tracking that game's local state (board,
+  history, last analysis) and speaking KataGo's `analysis`-mode
+  newline-delimited JSON request/response protocol on its behalf --
+  against the single shared engine process owned by `GamesTutor.Go.Engine`,
+  not a per-game subprocess of its own (see that module's moduledoc for
+  why: a subprocess per game meant N concurrent games meant N processes
+  each independently demanding a full thread pool on a CPU-only droplet).
 
   Unlike chess's two-Stockfish-process design (Stockfish's strength knobs
   are per-process UCI options), KataGo's strength knob (`maxVisits`) is a
@@ -192,18 +195,9 @@ defmodule GamesTutor.Go.GameServer do
     opponent_config = Keyword.fetch!(opts, :opponent_config)
     history = Keyword.get(opts, :history, [])
     human_color = Keyword.get(opts, :human_color, "black")
-    katago = Application.fetch_env!(:games_tutor, :katago)
-
-    port =
-      Port.open({:spawn_executable, katago[:path]}, [
-        :binary,
-        :exit_status,
-        args: ["analysis", "-config", katago[:config_path], "-model", katago[:model_path]]
-      ])
 
     state = %{
       game_id: game_id,
-      port: port,
       size: @default_size,
       komi: @default_komi,
       history: history,
@@ -217,17 +211,15 @@ defmodule GamesTutor.Go.GameServer do
       last_analysis: nil
     }
 
-    # The initial analysis query (a real engine call, including model load
-    # on a cold KataGo process) does NOT happen here. init/1 blocking on it
-    # means DynamicSupervisor.start_child/2 -- and therefore the whole
-    # GameSupervisor, which starts every game's engine process one at a
-    # time -- blocks for that entire duration too, so one slow cold start
-    # head-of-line-blocks every other concurrent game trying to start at the
-    # same moment. Returning immediately here and doing the query in
-    # handle_continue/2 unblocks the supervisor as soon as the port is
-    # spawned; a handle_call arriving before the continue finishes still
-    # waits (correctly -- there's no analysis to answer with yet), but that
-    # wait no longer holds up anyone else's game from starting.
+    # The initial analysis query (a real query against the shared engine)
+    # does NOT happen here. init/1 blocking on it means
+    # DynamicSupervisor.start_child/2 blocks for that entire duration too,
+    # head-of-line-blocking every other concurrent game trying to start at
+    # the same moment. Returning immediately here and doing the query in
+    # handle_continue/2 unblocks the supervisor right away; a handle_call
+    # arriving before the continue finishes still waits (correctly --
+    # there's no analysis to answer with yet), but that wait no longer
+    # holds up anyone else's game from starting.
     {:ok, state, {:continue, :initial_analysis}}
   end
 
@@ -310,32 +302,8 @@ defmodule GamesTutor.Go.GameServer do
   end
 
   @impl true
-  def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
-    Logger.error("KataGo process for game #{state.game_id} exited unexpectedly: #{status}")
-    {:stop, {:katago_exited, status}, state}
-  end
-
-  # A response arriving after await_response/3 already gave up and returned
-  # {:error, :katago_timeout} to its caller -- discovered empirically (not
-  # theorized) via a test using query_timeout_ms/0's override to force a
-  # deterministic timeout: the query genuinely completes on KataGo's side
-  # a moment later, and that {:data, ...} lands here, outside of any active
-  # `receive`, with no handle_info clause to catch it -- crashing the whole
-  # GenServer via FunctionClauseError. This closes that gap: harmless to
-  # discard (its response body, if it decoded, would carry an id nothing is
-  # waiting for) -- the same situation the id-mismatch branch inside
-  # await_response/3 already handles safely when it happens WHILE a
-  # receive is active; this is that same scenario when one isn't.
-  @impl true
-  def handle_info({port, {:data, _data}}, %{port: port} = state) do
-    Logger.debug("Go GameServer for #{state.game_id}: discarding a late KataGo response (already timed out)")
-    {:noreply, state, @idle_timeout}
-  end
-
-  @impl true
   def handle_info(:timeout, state) do
-    Logger.info("Go GameServer for #{state.game_id} idle-timed-out, stopping katago")
-    Port.close(state.port)
+    Logger.info("Go GameServer for #{state.game_id} idle-timed-out")
     {:stop, :normal, state}
   end
 
@@ -589,13 +557,13 @@ defmodule GamesTutor.Go.GameServer do
 
   ## KataGo protocol
 
+  # Talks to the single shared GamesTutor.Go.Engine process, not a port
+  # this GenServer owns itself -- see that module's moduledoc. `id` is
+  # filled in by Engine.query/2, not here.
   defp query(state, history, max_visits, kind) do
     :telemetry.span([:games_tutor, :engine, :query], %{engine: :katago, kind: kind}, fn ->
-      id = "q#{System.unique_integer([:positive])}"
-
       request =
         %{
-          id: id,
           moves: history,
           rules: "tromp-taylor",
           komi: state.komi,
@@ -606,8 +574,7 @@ defmodule GamesTutor.Go.GameServer do
         }
         |> maybe_include_ownership_and_policy(kind)
 
-      Port.command(state.port, Jason.encode!(request) <> "\n")
-      result = await_response(state.port, id, "")
+      result = GamesTutor.Go.Engine.query(request, query_timeout_ms())
       {result, %{engine: :katago, kind: kind}}
     end)
   end
@@ -620,58 +587,11 @@ defmodule GamesTutor.Go.GameServer do
 
   defp maybe_include_ownership_and_policy(request, :opponent_move), do: request
 
-  # Public (not `defp`) so the buffer-draining logic below is directly
-  # testable with a fake `port` term and messages pre-loaded into the test
-  # process's own mailbox -- see game_server_test.exs.
-  @doc false
-  def await_response(port, expected_id, buffer) do
-    case pop_line(buffer) do
-      {:ok, decoded, rest} ->
-        if decoded["id"] == expected_id, do: {:ok, decoded}, else: await_response(port, expected_id, rest)
-
-      :incomplete ->
-        receive do
-          {^port, {:data, data}} -> await_response(port, expected_id, buffer <> data)
-        after
-          query_timeout_ms() -> {:error, :katago_timeout}
-        end
-    end
-  end
-
   # Overridable (default @query_timeout, 60s) so tests can force a fast,
   # deterministic {:error, :katago_timeout} instead of actually waiting 60s
   # for a response that will never come -- see game_server_test.exs's
   # "query failure" describe block.
   defp query_timeout_ms, do: Application.get_env(:games_tutor, :go_query_timeout_ms, @query_timeout)
-
-  # Pops one complete newline-terminated line off the front of `buffer`. A
-  # single {:data, ...} chunk from the port can contain more than one
-  # complete response (KataGo writes them back-to-back) -- this drains every
-  # already-buffered complete line before ever blocking in `receive` again;
-  # the previous version only checked the newest chunk, so a second response
-  # already sitting in `buffer` after an id mismatch would sit unparsed until
-  # (maybe never) more data arrived, producing a spurious @query_timeout.
-  #
-  # Also skips (rather than crashes on) any line that isn't valid JSON --
-  # analysis.cfg points KataGo's own logging at `logDir`, not stdout, so this
-  # shouldn't normally trigger, but a stray non-JSON line on stdout must not
-  # take down the whole GameServer via Jason.decode!/1.
-  defp pop_line(buffer) do
-    case String.split(buffer, "\n", parts: 2) do
-      [line, rest] ->
-        case Jason.decode(line) do
-          {:ok, decoded} ->
-            {:ok, decoded, rest}
-
-          {:error, _reason} ->
-            Logger.warning("Skipping non-JSON line from KataGo stdout: #{inspect(line)}")
-            pop_line(rest)
-        end
-
-      [_incomplete] ->
-        :incomplete
-    end
-  end
 
   defp extract_analysis(resp) do
     root = resp["rootInfo"]

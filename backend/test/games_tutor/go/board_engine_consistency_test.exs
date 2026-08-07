@@ -1,8 +1,7 @@
 defmodule GamesTutor.Go.BoardEngineConsistencyTest do
   # Tagged :load (excluded by default, same convention as
-  # concurrent_load_test.exs) -- spawns a real KataGo process and plays
-  # several real games' worth of moves, each a live engine query. Run
-  # explicitly with `mix test --include load`.
+  # concurrent_load_test.exs) -- plays several real games' worth of moves,
+  # each a live engine query. Run explicitly with `mix test --include load`.
   #
   # Finding 1c (engine-layer review): "this is a class of bug, not a
   # single instance, and the current design has no guard against it."
@@ -16,28 +15,24 @@ defmodule GamesTutor.Go.BoardEngineConsistencyTest do
   # holding a stone KataGo no longer considers present -- a live
   # divergence, regardless of what specific mechanism caused it (not just
   # the suicide case already covered elsewhere).
+  #
+  # Queries the same single shared GamesTutor.Go.Engine every GameServer
+  # queries (see that module's moduledoc) rather than opening its own
+  # scratch KataGo process -- this is exactly "the live engine" the test's
+  # own name refers to.
   use ExUnit.Case, async: false
   @moduletag :load
   @moduletag timeout: 300_000
 
-  alias GamesTutor.Go.{Board, GameServer}
+  alias GamesTutor.Go.{Board, Engine}
 
   @games 3
   @moves_per_game 20
   @probe_sample_size 6
 
   test "Board's tracked stones never disagree with what the live engine still considers occupied, across real games" do
-    katago = Application.fetch_env!(:games_tutor, :katago)
-
-    port =
-      Port.open({:spawn_executable, katago[:path]}, [
-        :binary,
-        :exit_status,
-        args: ["analysis", "-config", katago[:config_path], "-model", katago[:model_path]]
-      ])
-
     for game_n <- 1..@games do
-      {final_history, final_board, next_color} = play_random_legal_game(port)
+      {final_history, final_board, next_color} = play_random_legal_game()
 
       final_board.stones
       |> Map.keys()
@@ -47,20 +42,18 @@ defmodule GamesTutor.Go.BoardEngineConsistencyTest do
       |> Enum.each(fn coord ->
         probe_coord_str = Board.format_coord(coord)
         probe_history = final_history ++ [[next_color, probe_coord_str]]
-        resp = raw_query(port, probe_history, 1)
+        resp = raw_query(probe_history, 1)
 
         assert Map.has_key?(resp, "error"),
                "divergence in game #{game_n}: Board considers #{probe_coord_str} occupied, " <>
                  "but KataGo accepted a stone there. History: #{inspect(final_history)}"
       end)
     end
-
-    Port.close(port)
   end
 
-  defp play_random_legal_game(port) do
+  defp play_random_legal_game do
     Enum.reduce(1..@moves_per_game, {[], Board.new(9), "B"}, fn _n, {history, board, color} ->
-      resp = raw_query(port, history, 100)
+      resp = raw_query(history, 100)
       move = (List.first(resp["moveInfos"]) || %{})["move"] || "pass"
       board_color = if color == "B", do: :black, else: :white
       {new_board, _captured} = Board.apply_move(board, board_color, Board.parse_coord(move))
@@ -69,11 +62,8 @@ defmodule GamesTutor.Go.BoardEngineConsistencyTest do
     end)
   end
 
-  defp raw_query(port, history, max_visits) do
-    id = "probe#{System.unique_integer([:positive])}"
-
+  defp raw_query(history, max_visits) do
     request = %{
-      id: id,
       moves: history,
       rules: "tromp-taylor",
       komi: 7.5,
@@ -83,8 +73,7 @@ defmodule GamesTutor.Go.BoardEngineConsistencyTest do
       maxVisits: max_visits
     }
 
-    Port.command(port, Jason.encode!(request) <> "\n")
-    {:ok, resp} = GameServer.await_response(port, id, "")
+    {:ok, resp} = Engine.query(request, 60_000)
     resp
   end
 end
