@@ -12,6 +12,9 @@ export type Move = {
   engine_best_move: string | null;
   classification: string | null;
   think_time_ms: number | null;
+  // Go only -- KataGo's raw policy-network prior (0.0-1.0) for the move as
+  // played; null for chess and for Go moves recorded before this existed.
+  prior: number | null;
 };
 
 export type GameSummary = {

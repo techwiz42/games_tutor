@@ -1,9 +1,9 @@
 "use client";
 
-import type { ComponentType } from "react";
+import { useState, type ComponentType } from "react";
 import { BoundedGoban } from "@sabaki/shudan";
 import "@sabaki/shudan/css/goban.css";
-import { parseGoBoard, vertexToCoord } from "@/lib/go-coords";
+import { parseGoBoard, ownershipToPaintMap, vertexToCoord } from "@/lib/go-coords";
 import type { Game } from "@/lib/games-api";
 import { buttonSecondary } from "@/lib/auth-ui";
 
@@ -20,8 +20,9 @@ type Props = {
 };
 
 export default function GoBoardPanel({ game, submitting, onMove }: Props) {
-  const { size, grid } = parseGoBoard(game.fen);
+  const { size, grid, ownership } = parseGoBoard(game.fen);
   const interactive = game.status === "in_progress" && !submitting;
+  const [showTerritory, setShowTerritory] = useState(false);
 
   const handleVertexClick = (_evt: MouseEvent, vertex: [number, number]) => {
     if (!interactive) return;
@@ -36,15 +37,23 @@ export default function GoBoardPanel({ game, submitting, onMove }: Props) {
           maxWidth={400}
           maxHeight={400}
           signMap={grid}
+          paintMap={showTerritory && ownership ? ownershipToPaintMap(ownership, size) : undefined}
           showCoordinates={true}
           fuzzyStonePlacement={true}
           animateStonePlacement={true}
           onVertexClick={handleVertexClick}
         />
       </div>
-      <button onClick={() => interactive && onMove("pass")} disabled={!interactive} className={`${buttonSecondary} mt-3`}>
-        Pass
-      </button>
+      <div className="flex gap-2 mt-3">
+        <button onClick={() => interactive && onMove("pass")} disabled={!interactive} className={buttonSecondary}>
+          Pass
+        </button>
+        {ownership && (
+          <button onClick={() => setShowTerritory((v) => !v)} className={buttonSecondary}>
+            {showTerritory ? "Hide" : "Show"} territory estimate
+          </button>
+        )}
+      </div>
     </div>
   );
 }

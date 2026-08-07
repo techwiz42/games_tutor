@@ -13,6 +13,36 @@ export function vertexToCoord(x: number, y: number, size: number): string {
 
 export type Stone = 1 | -1 | 0;
 
-export function parseGoBoard(fen: string): { size: number; grid: Stone[][] } {
-  return JSON.parse(fen);
+// `ownership` is optional -- absent for chess games entirely, and for any
+// Go position recorded before this field existed (see
+// GamesTutor.Go.GameServer's board_json/2). A flat size*size array, one
+// float per point in [-1 (white), 1 (black)], in the exact same row-major
+// (row 0 = top) order `grid` is already in -- empirically confirmed
+// against the live engine, not assumed (see the finding-2 commit).
+export function parseGoBoard(fen: string): { size: number; grid: Stone[][]; ownership: number[] | null } {
+  const parsed = JSON.parse(fen);
+  return { size: parsed.size, grid: parsed.grid, ownership: parsed.ownership ?? null };
+}
+
+// Territory overlay coloring for Shudan's `paintMap` prop: thresholds the
+// continuous per-point ownership estimate into discrete black/white/
+// contested paint, shaped to match `grid`'s own row-major 2D layout.
+// +-0.3 (not 0) as the "contested" cutoff -- KataGo's ownership rarely
+// lands exactly on 0 even for genuinely undecided points, so a strict
+// sign check would paint almost every point some color; this keeps
+// visibly-uncertain points (dame, unresolved life-and-death) neutral
+// instead of implying false confidence.
+const CONTESTED_THRESHOLD = 0.3;
+
+export function ownershipToPaintMap(ownership: number[], size: number): Stone[][] {
+  const rows: Stone[][] = [];
+  for (let y = 0; y < size; y++) {
+    const row: Stone[] = [];
+    for (let x = 0; x < size; x++) {
+      const value = ownership[y * size + x];
+      row.push(value > CONTESTED_THRESHOLD ? 1 : value < -CONTESTED_THRESHOLD ? -1 : 0);
+    }
+    rows.push(row);
+  }
+  return rows;
 }
