@@ -2,12 +2,27 @@ defmodule GamesTutor.Go.Board do
   @moduledoc """
   Minimal Go board state tracker, for rendering/storage only. KataGo is
   the sole legality authority (see `GamesTutor.Go.GameServer` -- it
-  rejects illegal moves, including suicide/ko, before we ever get here),
-  so this module does NOT re-implement legality: it trusts the caller
-  that `apply_move/3` is being given an already-legal move, and only
-  computes the resulting stone positions (placement + capture via
+  rejects illegal moves like playing on an occupied point before we ever
+  get here), so this module does NOT re-implement legality: it trusts the
+  caller that `apply_move/3` is being given an already-legal move, and
+  only computes the resulting stone positions (placement + capture via
   liberty flood-fill) so the frontend has something to render without
   needing to know Go rules itself.
+
+  KataGo does NOT reject suicide/self-capture, though -- confirmed
+  empirically (not assumed; a previous version of this moduledoc claimed
+  otherwise), and not fixable by choosing a different named ruleset:
+  `GameServer.query/4` sends `rules: "tromp-taylor"`, and EVERY named
+  preset KataGo's analysis engine accepts (tromp-taylor, chinese,
+  japanese, korean, aga, chinese-ogs, new-zealand) has
+  multiStoneSuicideLegal effectively true -- a move that fills its own
+  group's last liberty, capturing no opponent stones in the process, is
+  silently accepted and that whole group is removed. `apply_move/3`
+  therefore checks the mover's own group for zero liberties too (after
+  opponent captures, same order KataGo uses -- see the function doc), not
+  just the opponent's groups, so this module's board state stays in sync
+  with KataGo's rather than silently diverging on the (rare, but a real
+  class of position) multi-stone-suicide case.
 
   Coordinates are zero-indexed `{x, y}` with `y = 0` at rank 1 (the
   bottom row, matching how Go boards are conventionally described) --
@@ -24,7 +39,18 @@ defmodule GamesTutor.Go.Board do
 
   def new(size), do: %{size: size, stones: %{}}
 
-  @doc "Returns `{new_board, captured_indices}`. A pass leaves the board unchanged."
+  @doc """
+  Returns `{new_board, captured_indices}` -- `captured_indices` covers BOTH
+  opponent groups captured by this move AND the mover's own group, if this
+  move was a (KataGo-legal, see moduledoc) self-capture. A pass leaves the
+  board unchanged.
+
+  Opponent groups are checked first, self-capture second -- same order
+  KataGo evaluates in: removing an opponent group can open up a liberty
+  that saves the mover's own group, so a stone that looks self-capturing
+  in isolation (all neighbors occupied) may not be, once whichever of
+  those neighbors just got captured is accounted for.
+  """
   def apply_move(board, _color, :pass), do: {board, []}
 
   def apply_move(%{size: size, stones: stones} = board, color, {x, y})
@@ -49,7 +75,13 @@ defmodule GamesTutor.Go.Board do
         end
       end)
 
-    {%{board | stones: stones}, captured}
+    {stones, self_captured} =
+      case group_and_liberty_count(stones, size, idx) do
+        {group, 0} -> {Map.drop(stones, group), group}
+        _has_liberties -> {stones, []}
+      end
+
+    {%{board | stones: stones}, captured ++ self_captured}
   end
 
   @doc "Row-major grid (row 0 = top / highest rank), 1 = black, -1 = white, 0 = empty -- Sabaki/Shudan's convention."

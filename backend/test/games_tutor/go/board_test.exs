@@ -97,6 +97,91 @@ defmodule GamesTutor.Go.BoardTest do
     end
   end
 
+  # Finding 1c (engine-layer review): KataGo's analysis engine, as
+  # configured (rules: "tromp-taylor" -- see GameServer.query/4), allows
+  # multi-stone suicide -- confirmed empirically against the real engine,
+  # across every named ruleset preset it accepts, not assumed (see the
+  # commit message for finding 1c). These positions are exactly what was
+  # sent to and verified against the live engine; they're hardcoded here
+  # (not re-querying a live engine in the test) per the "recorded fixture,
+  # not a live engine" rule for engine-behavior-dependent tests.
+  describe "apply_move/3 self-capture (suicide) -- finding 1c" do
+    test "a multi-stone group filling its own last liberty is removed" do
+      board = Board.new(9)
+      # Black B4,D4 ({1,3},{3,3}) each down to one shared liberty at C4
+      # ({2,3}), surrounded by White everywhere else -- same position
+      # verified against the live engine.
+      {board, _} = Board.apply_move(board, :black, {1, 3})
+      {board, _} = Board.apply_move(board, :black, {3, 3})
+      {board, _} = Board.apply_move(board, :white, {0, 3})
+      {board, _} = Board.apply_move(board, :white, {4, 3})
+      {board, _} = Board.apply_move(board, :white, {1, 4})
+      {board, _} = Board.apply_move(board, :white, {3, 4})
+      {board, _} = Board.apply_move(board, :white, {2, 4})
+      {board, _} = Board.apply_move(board, :white, {1, 2})
+      {board, _} = Board.apply_move(board, :white, {3, 2})
+      {board, _} = Board.apply_move(board, :white, {2, 2})
+
+      {board, captured} = Board.apply_move(board, :black, {2, 3})
+
+      assert Enum.sort(captured) == Enum.sort([index(9, 1, 3), index(9, 2, 3), index(9, 3, 3)])
+      flat = List.flatten(Board.to_grid(board))
+      assert Enum.count(flat, &(&1 == 1)) == 0
+      # The surrounding White stones are untouched.
+      assert Enum.count(flat, &(&1 == -1)) == 8
+    end
+
+    test "a single stone filling its own last liberty is removed" do
+      board = Board.new(9)
+      # (1,4)'s four neighbors: (0,4),(2,4),(1,3),(1,5) -- all White.
+      {board, _} = Board.apply_move(board, :white, {0, 4})
+      {board, _} = Board.apply_move(board, :white, {2, 4})
+      {board, _} = Board.apply_move(board, :white, {1, 3})
+      {board, _} = Board.apply_move(board, :white, {1, 5})
+      {board, captured} = Board.apply_move(board, :black, {1, 4})
+
+      assert captured == [index(9, 1, 4)]
+      assert Board.to_grid(board) |> List.flatten() |> Enum.count(&(&1 == 1)) == 0
+    end
+
+    test "opponent captures are resolved BEFORE checking self-capture -- a move that captures its way to a liberty is not suicide" do
+      board = Board.new(9)
+      # White single stone at (3,4)'s only liberty is (3,3) -- its other
+      # neighbors (3,5),(2,4),(4,4) are pre-occupied (by Black).
+      {board, _} = Board.apply_move(board, :black, {3, 5})
+      {board, _} = Board.apply_move(board, :black, {2, 4})
+      {board, _} = Board.apply_move(board, :black, {4, 4})
+      {board, _} = Board.apply_move(board, :white, {3, 4})
+      # Black's about-to-be-played (3,3) is otherwise boxed in by White on
+      # its other 3 sides -- in isolation this would be suicide, UNLESS
+      # playing it also captures White's (3,4) stone first, which it does.
+      {board, _} = Board.apply_move(board, :white, {2, 3})
+      {board, _} = Board.apply_move(board, :white, {4, 3})
+      {board, _} = Board.apply_move(board, :white, {3, 2})
+
+      {board, captured} = Board.apply_move(board, :black, {3, 3})
+
+      assert captured == [index(9, 3, 4)]
+      # Black's new stone at (3,3) survived (not self-captured), alongside
+      # the 3 setup stones -- 4 total, not 3 (which is what a wrongly
+      # self-captured (3,3) would leave).
+      grid = Board.to_grid(board)
+      assert grid |> List.flatten() |> Enum.count(&(&1 == 1)) == 4
+      assert stone_at(grid, {3, 3}) == 1
+    end
+  end
+
+  defp stone_at(grid, {x, y}) do
+    row = 8 - y
+    Enum.at(grid, row) |> Enum.at(x)
+  end
+
+  # Mirrors Board's own private index/2 (y * size + x) -- duplicated here
+  # (not making Board's private one public) so the single-stone test above
+  # can assert on the exact captured index without hardcoding the
+  # arithmetic redundantly inline.
+  defp index(size, x, y), do: y * size + x
+
   describe "to_grid/1" do
     test "row 0 is the top (highest rank), matching Shudan's expected orientation" do
       board = Board.new(9)
