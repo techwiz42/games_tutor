@@ -71,12 +71,22 @@ type VoiceHook = {
 // tutor" panel sitting on the page.
 function VoicePanel({ voice, gameInProgress }: { voice: VoiceHook; gameInProgress: boolean }) {
   const { status, error, isAssistantSpeaking, isUserSpeaking, disconnect, stop, audioElRef } = voice;
+  const wasInProgressRef = useRef(gameInProgress);
 
-  // End the voice session as soon as the game itself ends, rather than
-  // sitting connected (mic still hot) indefinitely just because the player
-  // hasn't navigated away yet.
+  // End the voice session if the game ends WHILE a conversation is live,
+  // rather than sitting connected (mic still hot) indefinitely just
+  // because the player hasn't navigated away yet. Must be an edge check
+  // (was in progress, just ended), not "is it in progress right now" --
+  // "Ask tutor why" is also offered on already-finished games (reviewing
+  // a past mistake after resigning/scoring), where gameInProgress is
+  // false from the moment the session starts; a static check fired the
+  // instant status reached "connected", disconnecting before the tutor
+  // had said anything.
   useEffect(() => {
-    if (!gameInProgress && status === "connected") {
+    const wasInProgress = wasInProgressRef.current;
+    wasInProgressRef.current = gameInProgress;
+
+    if (wasInProgress && !gameInProgress && status === "connected") {
       disconnect();
     }
   }, [gameInProgress, status, disconnect]);
