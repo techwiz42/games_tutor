@@ -91,6 +91,24 @@ defmodule GamesTutorWeb.GoGameControllerTest do
     assert %{"human_move" => %{"ply" => 2, "player" => "human"}} = json_response(move_conn, 200)
   end
 
+  test "DELETE /api/games/:id stops the live KataGo process, not just the DB row", %{conn: conn} do
+    create_conn = post(conn, "/api/games", %{"game_type" => "go", "opponent_max_visits" => 10})
+    %{"id" => id} = json_response(create_conn, 201)
+
+    # A real move to actually spawn (not just DB-create) the GameServer.
+    move_conn = fresh_conn(conn) |> post("/api/games/#{id}/moves", %{"move" => "E5"})
+    json_response(move_conn, 200)
+
+    assert [{pid, _}] = Registry.lookup(GamesTutor.Games.GameRegistry, {:go, id})
+    assert Process.alive?(pid)
+
+    delete_conn = fresh_conn(conn) |> delete("/api/games/#{id}")
+    json_response(delete_conn, 200)
+
+    refute Process.alive?(pid)
+    assert Registry.lookup(GamesTutor.Games.GameRegistry, {:go, id}) == []
+  end
+
   test "hint is hard-refused for a Go calibration game", %{conn: conn} do
     create_conn = post(conn, "/api/games", %{"game_type" => "go", "is_calibration" => true})
     %{"id" => id} = json_response(create_conn, 201)

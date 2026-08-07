@@ -122,6 +122,40 @@ defmodule GamesTutor.Games do
     end
   end
 
+  @doc """
+  Deletes a game and everything derived from it -- moves, voice sessions,
+  and calibration history are all FK-cascaded at the DB level (`on_delete:
+  :delete_all`, see the migrations that created those tables), not walked
+  manually here. Note this does NOT undo a calibration game's effect on
+  the player's `SkillProfile`: `Skill.record_calibration_result/1` applies
+  a one-way Bayesian update to the profile's rating at game-end time and
+  never recomputes it from history, so deleting a past "rate my play"
+  game removes the audit-trail row but not the rating adjustment it
+  already caused -- the same way deleting a ledger entry doesn't reverse
+  a transaction that already cleared.
+
+  Also stops a live engine subprocess for this game if one happens to
+  still be running (idle-eviction hasn't kicked in yet) -- otherwise it
+  would sit registered and consuming resources for a game that no longer
+  exists, until its own 30-minute idle timeout.
+  """
+  def delete_game(user, game_id) do
+    with {:ok, game} <- get_game(user, game_id) do
+      stop_engine_process(game)
+      Repo.delete(game)
+    end
+  end
+
+  defp stop_engine_process(%Game{game_type: "chess", id: id}), do: stop_registered_process(id)
+  defp stop_engine_process(%Game{game_type: "go", id: id}), do: stop_registered_process({:go, id})
+
+  defp stop_registered_process(registry_key) do
+    case Registry.lookup(GamesTutor.Games.GameRegistry, registry_key) do
+      [{pid, _}] -> DynamicSupervisor.terminate_child(GamesTutor.Games.GameSupervisor, pid)
+      [] -> :ok
+    end
+  end
+
   @doc "For the get_board_state voice tool."
   def board_state(user, game_id) do
     with {:ok, game} <- get_game(user, game_id) do

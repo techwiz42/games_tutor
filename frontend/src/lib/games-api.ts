@@ -123,6 +123,11 @@ export async function undoMove(id: string): Promise<Game> {
   return asJson<Game>(res);
 }
 
+export async function deleteGame(id: string): Promise<void> {
+  const res = await apiFetch(`/api/games/${id}`, { method: "DELETE" });
+  await asJson(res);
+}
+
 export type BoardState = {
   fen: string;
   status: string;

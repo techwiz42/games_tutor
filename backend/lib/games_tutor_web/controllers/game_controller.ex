@@ -54,6 +54,12 @@ defmodule GamesTutorWeb.GameController do
     end
   end
 
+  def delete(conn, %{"id" => id}) do
+    with {:ok, _game} <- Games.delete_game(current_user(conn), id) do
+      json(conn, %{})
+    end
+  end
+
   ## Voice tool endpoints
 
   def board_state(conn, %{"id" => id}) do

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ProtectedRoute } from "@/lib/protected-route";
-import { createGame, listGames, listSkillProfiles, GameSummary, SkillProfile } from "@/lib/games-api";
+import { createGame, deleteGame, listGames, listSkillProfiles, GameSummary, SkillProfile } from "@/lib/games-api";
 import {
   pageWrap,
   navBar,
@@ -14,6 +14,7 @@ import {
   mutedText,
   buttonPrimary,
   buttonSecondary,
+  buttonDanger,
   linkButton,
   segmentedGroup,
   segmentedOption,
@@ -44,6 +45,7 @@ function GamesContent() {
   const [error, setError] = useState<string | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [selfReportedElo, setSelfReportedElo] = useState("");
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const changeGameType = (type: "chess" | "go") => {
     setGameType(type);
@@ -79,6 +81,30 @@ function GamesContent() {
       startGame({ isCalibration: true });
     } else {
       setShowOnboarding(true);
+    }
+  };
+
+  const handleDeleteGame = async (e: React.MouseEvent, game: GameSummary) => {
+    // Row is a single <a> covering the whole game -- this button is a
+    // sibling of it (not nested inside), so no need to stop it navigating,
+    // but stop propagation anyway in case that ever changes.
+    e.preventDefault();
+    e.stopPropagation();
+
+    const label = `${game.game_type}${game.is_calibration ? " (rate my play)" : ""} game from ${new Date(
+      game.started_at
+    ).toLocaleString()}`;
+    if (!window.confirm(`Delete this ${label}? This can't be undone.`)) return;
+
+    setDeletingId(game.id);
+    setError(null);
+    try {
+      await deleteGame(game.id);
+      setGames((prev) => prev && prev.filter((g) => g.id !== game.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete game");
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -185,10 +211,10 @@ function GamesContent() {
           ) : (
             <ul className="flex flex-col gap-2">
               {games.map((game) => (
-                <li key={game.id}>
+                <li key={game.id} className="flex items-center gap-2">
                   <a
                     href={`/games/${game.id}`}
-                    className="flex items-center justify-between rounded-lg border border-zinc-200 dark:border-zinc-800 px-4 py-3 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors"
+                    className="flex-1 flex items-center justify-between rounded-lg border border-zinc-200 dark:border-zinc-800 px-4 py-3 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors"
                   >
                     <span className="text-sm text-zinc-900 dark:text-zinc-50">
                       {game.game_type} -- {statusLabel(game)}
@@ -196,6 +222,14 @@ function GamesContent() {
                     </span>
                     <span className={mutedText}>{new Date(game.started_at).toLocaleString()}</span>
                   </a>
+                  <button
+                    onClick={(e) => handleDeleteGame(e, game)}
+                    disabled={deletingId === game.id}
+                    className={buttonDanger}
+                    aria-label={`Delete ${game.game_type} game from ${new Date(game.started_at).toLocaleString()}`}
+                  >
+                    {deletingId === game.id ? "Deleting..." : "Delete"}
+                  </button>
                 </li>
               ))}
             </ul>

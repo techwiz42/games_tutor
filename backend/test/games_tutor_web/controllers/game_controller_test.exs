@@ -111,6 +111,45 @@ defmodule GamesTutorWeb.GameControllerTest do
     assert %{"code" => "no_moves_to_undo"} = json_response(undo_conn, 422)
   end
 
+  test "DELETE /api/games/:id removes the game -- it 404s afterward and drops out of the list", %{conn: conn} do
+    auth = Plug.Conn.get_req_header(conn, "authorization")
+
+    create_conn = post(conn, "/api/games", %{"opponent_elo" => 800})
+    %{"id" => id} = json_response(create_conn, 201)
+
+    delete_conn = recycle_conn(auth) |> delete("/api/games/#{id}")
+    assert json_response(delete_conn, 200)
+
+    show_conn = recycle_conn(auth) |> get("/api/games/#{id}")
+    assert %{"detail" => "Game not found"} = json_response(show_conn, 404)
+
+    index_conn = recycle_conn(auth) |> get("/api/games")
+    assert %{"games" => games} = json_response(index_conn, 200)
+    refute Enum.any?(games, &(&1["id"] == id))
+  end
+
+  test "DELETE /api/games/:id refuses to delete another user's game", %{conn: conn} do
+    auth = Plug.Conn.get_req_header(conn, "authorization")
+    create_conn = post(conn, "/api/games", %{"opponent_elo" => 800})
+    %{"id" => id} = json_response(create_conn, 201)
+
+    {:ok, other_user} =
+      Accounts.register_user(%{
+        "email" => "other-controller-test-#{System.unique_integer([:positive])}@example.com",
+        "password" => "correcthorsebattery"
+      })
+
+    other_token = Guardian.issue_access_token(other_user)
+    other_conn = Phoenix.ConnTest.build_conn() |> Plug.Conn.put_req_header("authorization", "Bearer #{other_token}")
+
+    delete_conn = delete(other_conn, "/api/games/#{id}")
+    assert %{"detail" => "Game not found"} = json_response(delete_conn, 404)
+
+    # Untouched -- still visible to its real owner.
+    show_conn = recycle_conn(auth) |> get("/api/games/#{id}")
+    assert json_response(show_conn, 200)
+  end
+
   defp recycle_conn(auth_header) do
     Phoenix.ConnTest.build_conn() |> Plug.Conn.put_req_header("authorization", hd(auth_header))
   end

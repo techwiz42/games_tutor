@@ -44,6 +44,7 @@ defmodule GamesTutorWeb.Router do
     post "/:id/moves", GameController, :create_move
     post "/:id/resign", GameController, :resign
     post "/:id/undo", GameController, :undo
+    delete "/:id", GameController, :delete
     get "/:id/board-state", GameController, :board_state
     get "/:id/move-analysis", GameController, :move_analysis
     post "/:id/hint", GameController, :hint
