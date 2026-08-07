@@ -45,11 +45,20 @@ defmodule GamesTutorWeb.GoGameControllerTest do
     move_conn = fresh_conn(conn) |> post("/api/games/#{id}/moves", %{"move" => "E5"})
 
     assert %{
-             "human_move" => %{"uci" => "E5", "player" => "human", "classification" => classification},
+             "human_move" =>
+               %{"uci" => "E5", "player" => "human", "classification" => classification, "prior" => prior} = human,
              "engine_move" => %{"player" => "engine"}
            } = json_response(move_conn, 200)
 
     assert classification in ~w(best good inaccuracy mistake blunder)
+    # Regression: GameJSON.move/1 forgot classification_version when it was
+    # added (finding 3) -- correctly stored in the DB but silently missing
+    # from every JSON response, caught by exercising the actual HTTP
+    # boundary rather than only the internal GameServer return value.
+    assert human["classification_version"] == 2
+    assert is_float(prior) and prior >= 0.0 and prior <= 1.0
+    assert %{"ownership" => ownership} = Jason.decode!(human["fen_after"])
+    assert length(ownership) == 81
 
     illegal_conn = fresh_conn(conn) |> post("/api/games/#{id}/moves", %{"move" => "E5"})
     assert %{"code" => "illegal_move"} = json_response(illegal_conn, 422)
