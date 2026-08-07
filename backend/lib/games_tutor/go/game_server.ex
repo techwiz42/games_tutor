@@ -31,6 +31,33 @@ defmodule GamesTutor.Go.GameServer do
   position (whoever is to move), reused as both the next mover's
   eval_before and (sign-flipped) the previous mover's eval_after.
 
+  `:analysis`-kind queries (not the far cheaper ~20-visit `:opponent_move`
+  ones) also request `includeOwnership`/`includePolicy` -- measured cost
+  ~+14% latency at maxVisits 300 (see the finding-2 commit message), worth
+  it for two things `:opponent_move` queries never need: `ownership` (per-
+  point territory estimate, -1 white..+1 black, empirically confirmed to
+  share `Board.to_grid/1`'s exact row-major index order) drives both the
+  frontend territory overlay (embedded into the same `fen_after` JSON blob
+  `board_json/2` already writes per move -- no new column, no new
+  endpoint) and the final-result scoring below; `policy` (raw per-point
+  network prior, covering every point including ones the search never
+  visited, unlike `moveInfos`) is looked up per played move and stored as
+  `moves.prior`, the signal `GamesTutor.Voice.Tools` uses to tell "an
+  inaccuracy" apart from "not a move the engine considered at all".
+
+  The final result used to come from `analysis.score_lead`, a live neural
+  *estimate*, not a count -- on a close game this could name the wrong
+  winner even when a human counted correctly. `final_status/2` instead
+  sums the final position's `ownership` array into a real area count
+  (fractional per point, e.g. 0.5 for a genuinely contested point, not a
+  forced binary call) and applies komi itself. Chosen over spinning up a
+  separate short-lived GTP process for real scoring: this reuses the
+  `:analysis` query already made for the game-ending move (no new process
+  lifecycle to manage), at the cost of being an approximation rather than
+  KataGo's own dead-stone-removal judgment -- acceptable on a small 9x9
+  board where a genuinely finished (two-pass) position leaves ownership
+  confident (near +-1) almost everywhere.
+
   `query/4` failures (`{:error, :katago_timeout}` -- see `await_response/3`)
   never crash this process on their own: every call site replies
   `{:error, {:engine_unavailable, reason}}` to the caller and leaves `state`
@@ -252,6 +279,23 @@ defmodule GamesTutor.Go.GameServer do
     {:stop, {:katago_exited, status}, state}
   end
 
+  # A response arriving after await_response/3 already gave up and returned
+  # {:error, :katago_timeout} to its caller -- discovered empirically (not
+  # theorized) via a test using query_timeout_ms/0's override to force a
+  # deterministic timeout: the query genuinely completes on KataGo's side
+  # a moment later, and that {:data, ...} lands here, outside of any active
+  # `receive`, with no handle_info clause to catch it -- crashing the whole
+  # GenServer via FunctionClauseError. This closes that gap: harmless to
+  # discard (its response body, if it decoded, would carry an id nothing is
+  # waiting for) -- the same situation the id-mismatch branch inside
+  # await_response/3 already handles safely when it happens WHILE a
+  # receive is active; this is that same scenario when one isn't.
+  @impl true
+  def handle_info({port, {:data, _data}}, %{port: port} = state) do
+    Logger.debug("Go GameServer for #{state.game_id}: discarding a late KataGo response (already timed out)")
+    {:noreply, state, @idle_timeout}
+  end
+
   @impl true
   def handle_info(:timeout, state) do
     Logger.info("Go GameServer for #{state.game_id} idle-timed-out, stopping katago")
@@ -304,13 +348,14 @@ defmodule GamesTutor.Go.GameServer do
               player: "human",
               notation: coord_str,
               uci: coord_str,
-              fen_after: board_json(new_board),
+              fen_after: board_json(new_board, analysis.ownership),
               eval_before: eval_before_human,
               eval_after: eval_after_human,
               loss: loss,
               engine_best_move: engine_best_move,
               classification: Atom.to_string(MoveClassifier.classify(loss)),
-              think_time_ms: think_time_ms
+              think_time_ms: think_time_ms,
+              prior: prior_for_move(state.last_analysis.policy, coord)
             }
 
             moved_state = %{
@@ -322,7 +367,7 @@ defmodule GamesTutor.Go.GameServer do
             }
 
             if new_passes >= 2 do
-              status = final_status(analysis)
+              status = final_status(analysis, state.komi)
 
               moved_state = %{
                 moved_state
@@ -375,16 +420,17 @@ defmodule GamesTutor.Go.GameServer do
               player: "engine",
               notation: engine_coord_str,
               uci: engine_coord_str,
-              fen_after: board_json(new_board),
+              fen_after: board_json(new_board, analysis.ownership),
               eval_before: eval_before_engine,
               eval_after: eval_after_engine,
               loss: loss,
               engine_best_move: moved_state.last_analysis.best_move,
               classification: Atom.to_string(MoveClassifier.classify(loss)),
-              think_time_ms: System.monotonic_time(:millisecond) - move_started_at
+              think_time_ms: System.monotonic_time(:millisecond) - move_started_at,
+              prior: prior_for_move(moved_state.last_analysis.policy, engine_coord)
             }
 
-            status = if new_passes >= 2, do: final_status(analysis), else: :continue
+            status = if new_passes >= 2, do: final_status(analysis, moved_state.komi), else: :continue
 
             final_state = %{
               moved_state
@@ -434,13 +480,14 @@ defmodule GamesTutor.Go.GameServer do
               player: "engine",
               notation: engine_coord_str,
               uci: engine_coord_str,
-              fen_after: board_json(new_board),
+              fen_after: board_json(new_board, analysis.ownership),
               eval_before: eval_before_engine,
               eval_after: eval_after_engine,
               loss: loss,
               engine_best_move: state.last_analysis.best_move,
               classification: Atom.to_string(MoveClassifier.classify(loss)),
-              think_time_ms: System.monotonic_time(:millisecond) - move_started_at
+              think_time_ms: System.monotonic_time(:millisecond) - move_started_at,
+              prior: prior_for_move(state.last_analysis.policy, engine_coord)
             }
 
             new_state = %{
@@ -464,22 +511,32 @@ defmodule GamesTutor.Go.GameServer do
     :telemetry.span([:games_tutor, :engine, :query], %{engine: :katago, kind: kind}, fn ->
       id = "q#{System.unique_integer([:positive])}"
 
-      request = %{
-        id: id,
-        moves: history,
-        rules: "tromp-taylor",
-        komi: state.komi,
-        boardXSize: state.size,
-        boardYSize: state.size,
-        analyzeTurns: [length(history)],
-        maxVisits: max_visits
-      }
+      request =
+        %{
+          id: id,
+          moves: history,
+          rules: "tromp-taylor",
+          komi: state.komi,
+          boardXSize: state.size,
+          boardYSize: state.size,
+          analyzeTurns: [length(history)],
+          maxVisits: max_visits
+        }
+        |> maybe_include_ownership_and_policy(kind)
 
       Port.command(state.port, Jason.encode!(request) <> "\n")
       result = await_response(state.port, id, "")
       {result, %{engine: :katago, kind: kind}}
     end)
   end
+
+  # See the moduledoc for why only :analysis gets these (never
+  # :opponent_move -- nothing reads ownership/policy from that query, and
+  # it's ~20 visits vs. 300, where the same relative cost would matter more).
+  defp maybe_include_ownership_and_policy(request, :analysis),
+    do: Map.merge(request, %{includeOwnership: true, includePolicy: true})
+
+  defp maybe_include_ownership_and_policy(request, :opponent_move), do: request
 
   # Public (not `defp`) so the buffer-draining logic below is directly
   # testable with a fake `port` term and messages pre-loaded into the test
@@ -540,9 +597,34 @@ defmodule GamesTutor.Go.GameServer do
     %{
       score_lead: root["scoreLead"] * 1.0,
       current_player: root["currentPlayer"],
-      best_move: (List.first(resp["moveInfos"]) || %{})["move"]
+      best_move: (List.first(resp["moveInfos"]) || %{})["move"],
+      score_stdev: root["scoreStdev"] && root["scoreStdev"] * 1.0,
+      winrate: root["winrate"] && root["winrate"] * 1.0,
+      visits: root["visits"],
+      # Both nil for :opponent_move queries (see maybe_include_ownership_and_policy/2).
+      ownership: resp["ownership"],
+      policy: resp["policy"],
+      top_moves:
+        Enum.map(resp["moveInfos"] || [], fn m ->
+          %{move: m["move"], prior: m["prior"], pv: m["pv"], visits: m["visits"]}
+        end)
     }
   end
+
+  # `policy` is KataGo's raw per-point policy-network prior (size*size + 1
+  # entries: every board point plus "pass"), present only on :analysis-kind
+  # queries. Unlike moveInfos (which only lists moves that actually
+  # received search visits -- 7-9 out of 81+1 in a typical mid-game 300-
+  # visit query, empirically), this covers every point, so it's the only
+  # reliable way to get a prior for an arbitrary played move, including
+  # ones the search never explored at all (exactly the "not in the
+  # engine's candidate set" case GamesTutor.Voice.Tools wants to name).
+  # Index order empirically confirmed against a live query, not assumed:
+  # (size-1-y)*size+x -- row-major top-down, the same order
+  # Board.to_grid/1 already produces; the final entry is "pass".
+  defp prior_for_move(nil, _coord), do: nil
+  defp prior_for_move(policy, :pass), do: List.last(policy)
+  defp prior_for_move(policy, {x, y}), do: Enum.at(policy, (@default_size - 1 - y) * @default_size + x)
 
   ## Helpers
 
@@ -578,11 +660,50 @@ defmodule GamesTutor.Go.GameServer do
   # natural-unit scale (sub-point differences matter a lot here).
   defp round_centipoints(points), do: round(points * 100)
 
-  defp final_status(%{score_lead: lead, current_player: "W"}) when lead > 0, do: {:scored, :white_wins}
-  defp final_status(%{score_lead: lead, current_player: "W"}) when lead < 0, do: {:scored, :black_wins}
-  defp final_status(%{score_lead: lead, current_player: "B"}) when lead > 0, do: {:scored, :black_wins}
-  defp final_status(%{score_lead: lead, current_player: "B"}) when lead < 0, do: {:scored, :white_wins}
-  defp final_status(_analysis), do: {:scored, :draw}
+  # Public (not `defp`) so board_test.exs-style pure unit tests can exercise
+  # the scoring math directly with synthetic ownership arrays -- no live
+  # engine needed, this is purely our own arithmetic over data KataGo
+  # already gave us. See the moduledoc for why this replaces a
+  # score_lead-based winner call.
+  @doc false
+  def final_status(%{ownership: ownership}, komi) when is_list(ownership) do
+    {black_area, white_area} =
+      Enum.reduce(ownership, {0.0, 0.0}, fn point_ownership, {black, white} ->
+        {black + (point_ownership + 1) / 2, white + (1 - point_ownership) / 2}
+      end)
 
-  defp board_json(board), do: Jason.encode!(%{size: board.size, grid: Board.to_grid(board)})
+    black_lead = black_area - white_area - komi
+
+    cond do
+      black_lead > 0 -> {:scored, :black_wins}
+      black_lead < 0 -> {:scored, :white_wins}
+      true -> {:scored, :draw}
+    end
+  end
+
+  # Fallback for the case a final analysis somehow has no ownership (e.g.
+  # includeOwnership silently unsupported by some future engine version) --
+  # the previous score_lead-based heuristic, known to be less reliable
+  # (see moduledoc) but better than crashing when a game is ending.
+  def final_status(%{score_lead: lead, current_player: "W"}, _komi) when lead > 0, do: {:scored, :white_wins}
+  def final_status(%{score_lead: lead, current_player: "W"}, _komi) when lead < 0, do: {:scored, :black_wins}
+  def final_status(%{score_lead: lead, current_player: "B"}, _komi) when lead > 0, do: {:scored, :black_wins}
+  def final_status(%{score_lead: lead, current_player: "B"}, _komi) when lead < 0, do: {:scored, :white_wins}
+  def final_status(_analysis, _komi), do: {:scored, :draw}
+
+  # `ownership` is nil for :opponent_move queries and, in principle, for
+  # any :analysis response that somehow lacked it -- embedded into the same
+  # JSON blob as `grid` only when present, not a separate column/endpoint
+  # (see moduledoc for the storage-location reasoning). Already in the
+  # exact same row-major order Board.to_grid/1 produces (empirically
+  # confirmed, see prior_for_move/2's comment), so the frontend can zip
+  # the two flattened lists directly with no reshaping.
+  defp board_json(board, ownership) do
+    %{size: board.size, grid: Board.to_grid(board)}
+    |> maybe_put_ownership(ownership)
+    |> Jason.encode!()
+  end
+
+  defp maybe_put_ownership(map, nil), do: map
+  defp maybe_put_ownership(map, ownership), do: Map.put(map, :ownership, ownership)
 end

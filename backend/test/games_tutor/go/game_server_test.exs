@@ -7,6 +7,46 @@ defmodule GamesTutor.Go.GameServerTest do
 
   defp new_game_id, do: Ecto.UUID.generate()
 
+  # final_status/2's ownership-based math reduces to a clean identity worth
+  # spelling out here: black_area - white_area == sum(ownership) (the +1/-1
+  # constant terms in `(o+1)/2` vs `(1-o)/2` cancel), so these synthetic
+  # ownership lists don't need to be realistic 81-point boards -- they're
+  # testing the arithmetic in isolation, not any real position.
+  describe "final_status/2 -- finding 2 (ownership-based real scoring, not a score_lead estimate)" do
+    test "black wins when the area lead exceeds komi" do
+      assert GameServer.final_status(%{ownership: [1.0, 1.0, 1.0]}, 2.5) == {:scored, :black_wins}
+    end
+
+    test "white wins when the area lead favors white" do
+      assert GameServer.final_status(%{ownership: [-1.0, -1.0, -1.0]}, 7.5) == {:scored, :white_wins}
+    end
+
+    test "komi is genuinely applied, not just the raw area sign -- a small black area lead still loses to white once komi is subtracted" do
+      # sum(ownership) = 1.0 -- a real black lead, but well under komi 7.5.
+      assert GameServer.final_status(%{ownership: [1.0, -1.0, 1.0, -1.0, 1.0]}, 7.5) == {:scored, :white_wins}
+    end
+
+    test "an exact tie after komi is a draw" do
+      # sum(ownership) = 7.5, exactly matching komi.
+      ownership = List.duplicate(1.0, 7) ++ [0.5]
+      assert GameServer.final_status(%{ownership: ownership}, 7.5) == {:scored, :draw}
+    end
+
+    test "contested (near-zero ownership) points contribute fractional credit, not a forced binary call" do
+      # Two genuinely 50/50-contested points (ownership 0.0) contribute
+      # 0.5 to each side -- net zero to the lead either way, unlike a
+      # thresholding scheme that would have to arbitrarily assign them.
+      assert GameServer.final_status(%{ownership: [0.0, 0.0, 1.0, 1.0, 1.0]}, 2.5) == {:scored, :black_wins}
+      assert GameServer.final_status(%{ownership: [0.0, 0.0, 1.0, 1.0]}, 2.5) == {:scored, :white_wins}
+    end
+
+    test "falls back to the score_lead heuristic when ownership is absent (e.g. an older recorded fixture)" do
+      assert GameServer.final_status(%{score_lead: 5.0, current_player: "B"}, 7.5) == {:scored, :black_wins}
+      assert GameServer.final_status(%{score_lead: -5.0, current_player: "B"}, 7.5) == {:scored, :white_wins}
+      assert GameServer.final_status(%{score_lead: 5.0, current_player: "W"}, 7.5) == {:scored, :white_wins}
+    end
+  end
+
   test "plays a legal move and gets a real engine reply" do
     game_id = new_game_id()
     {:ok, _pid} = GameServer.ensure_started(game_id, %{"max_visits" => 10})
@@ -25,6 +65,27 @@ defmodule GamesTutor.Go.GameServerTest do
     assert engine.ply == human.ply + 1
     # A real move (or a legitimate pass) from the real weak-opponent query.
     assert engine.uci == "pass" or engine.uci =~ ~r/^[A-Za-z]\d{1,2}$/
+  end
+
+  test "a submitted move carries a real prior from the engine's policy network (finding 2)" do
+    game_id = new_game_id()
+    {:ok, _pid} = GameServer.ensure_started(game_id, %{"max_visits" => 10})
+
+    assert {:ok, %{human_move: human}} = GameServer.submit_human_move(game_id, "E5")
+
+    assert is_float(human.prior)
+    assert human.prior >= 0.0 and human.prior <= 1.0
+  end
+
+  test "a submitted move's fen_after embeds the real per-point ownership map (finding 2)" do
+    game_id = new_game_id()
+    {:ok, _pid} = GameServer.ensure_started(game_id, %{"max_visits" => 10})
+
+    assert {:ok, %{human_move: human}} = GameServer.submit_human_move(game_id, "E5")
+
+    decoded = Jason.decode!(human.fen_after)
+    assert length(decoded["ownership"]) == 81
+    assert Enum.all?(decoded["ownership"], &is_number/1)
   end
 
   test "rejects an illegal move (occupied point) without mutating game state" do

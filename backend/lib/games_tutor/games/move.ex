@@ -6,6 +6,15 @@ defmodule GamesTutor.Games.Move do
   centipawns from the moving player's perspective; nil when analysis wasn't
   computed (e.g. non-calibration games at low depth, or the opponent's own
   moves).
+
+  `prior` (Go only) is KataGo's raw policy-network probability (0.0-1.0)
+  for the move as actually played, looked up from the pre-move position's
+  full policy array -- unlike a move's presence/rank in the engine's
+  top-N candidate list, this is defined even for moves the search never
+  visited at all, so it's what distinguishes "an inaccuracy" from "not
+  a move the engine considered playing in the first place" (see
+  GamesTutor.Voice.Tools). Nil for chess moves and for Go moves recorded
+  before this field existed.
   """
   use Ecto.Schema
   import Ecto.Changeset
@@ -29,6 +38,7 @@ defmodule GamesTutor.Games.Move do
     field :engine_best_move, :string
     field :classification, :string
     field :think_time_ms, :integer
+    field :prior, :float
 
     timestamps(type: :utc_datetime, updated_at: false)
   end
@@ -47,7 +57,8 @@ defmodule GamesTutor.Games.Move do
       :loss,
       :engine_best_move,
       :classification,
-      :think_time_ms
+      :think_time_ms,
+      :prior
     ])
     |> validate_required([:game_id, :ply, :player, :notation, :uci, :fen_after])
     |> validate_inclusion(:player, @players)

@@ -63,7 +63,8 @@ defmodule GamesTutorWeb.GameJSON do
       loss: move.loss,
       engine_best_move: move.engine_best_move,
       classification: move.classification,
-      think_time_ms: move.think_time_ms
+      think_time_ms: move.think_time_ms,
+      prior: move.prior
     }
   end
 end
