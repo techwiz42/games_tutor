@@ -59,6 +59,11 @@ export function useRealtimeVoiceSession(gameId: string) {
   // itself (and therefore dc.onmessage) get redefined every time
   // `disconnect`'s identity changes.
   const disconnectRef = useRef<() => void>(() => {});
+  // Same reasoning as disconnectRef -- handleDataChannelMessage needs to
+  // call this from inside a case defined earlier in the file than
+  // reportFatalError itself, without making itself get redefined every
+  // time reportFatalError's identity changes.
+  const reportFatalErrorRef = useRef<(message: string) => void>(() => {});
   const audioElRef = useRef<HTMLAudioElement | null>(null);
   // Real OpenAI-reported usage, accumulated across every response.done event
   // this session sees -- never fabricated; a field this app can't parse just
@@ -131,34 +136,62 @@ export function useRealtimeVoiceSession(gameId: string) {
             totalTokensRef.current += usageTokens;
           }
 
-          let hadFunctionCall = false;
-          for (const item of response?.output ?? []) {
-            if (item.type === "function_call") {
-              hadFunctionCall = true;
-              const callId = item.call_id as string;
-              const name = item.name as string;
-              const args = JSON.parse((item.arguments as string) || "{}");
-              const result = await callTool(name, args);
+          const functionCalls = (response?.output ?? []).filter((item) => item.type === "function_call");
 
+          if (functionCalls.length > 0) {
+            // Every tool output for this turn must be submitted BEFORE
+            // requesting one continuation -- sending response.create after
+            // each individual result (the previous version) fires a second
+            // response.create while the first is still being processed
+            // whenever a turn makes more than one tool call (the tutoring
+            // instructions offer several tools, e.g. get_board_state AND
+            // explain_move together), which the Realtime API rejects as an
+            // `error` event -- one this hook didn't handle at all until now,
+            // so the failure was completely silent: the tutor would say its
+            // opening line ("let me think this through...") and then never
+            // respond again.
+            const results = await Promise.all(
+              functionCalls.map(async (item) => ({
+                callId: item.call_id as string,
+                result: await callTool(item.name as string, JSON.parse((item.arguments as string) || "{}")),
+              }))
+            );
+
+            for (const { callId, result } of results) {
               dcRef.current?.send(
                 JSON.stringify({
                   type: "conversation.item.create",
                   item: { type: "function_call_output", call_id: callId, output: JSON.stringify(result) },
                 })
               );
-              dcRef.current?.send(JSON.stringify({ type: "response.create" }));
             }
-          }
 
-          // A response with no function call is the tutor's actual spoken
-          // answer -- a tool-call round-trip always produces a further
-          // response.create above, which yields its own later response.done.
-          // This is meant to be one grounded explanation, not an open
-          // conversation (see tools.ex's tutoring instructions), so end the
-          // session once it lands rather than sitting connected/listening.
-          if (!hadFunctionCall) {
+            dcRef.current?.send(JSON.stringify({ type: "response.create" }));
+          } else {
+            // A response with no function call is the tutor's actual spoken
+            // answer -- a tool-call round-trip always produces a further
+            // response.create above, which yields its own later
+            // response.done. This is meant to be one grounded explanation,
+            // not an open conversation (see tools.ex's tutoring
+            // instructions), so end the session once it lands rather than
+            // sitting connected/listening.
             autoStopTimerRef.current = setTimeout(() => disconnectRef.current(), EXPLANATION_END_GRACE_MS);
           }
+          break;
+        }
+
+        case "error": {
+          // Previously unhandled entirely -- any server-side rejection
+          // (e.g. the double-response.create case above, or anything else
+          // going wrong mid-conversation) vanished with no trace, leaving
+          // the player watching a "Connected"/"Explaining..." status that
+          // would just never change. Surfacing it needs status: "error"
+          // specifically, not "ended" -- VoicePanel renders on every status
+          // except "idle"/"ended", so this is what keeps the panel (and the
+          // error message) visible instead of silently disappearing the
+          // way a normal end-of-explanation disconnect does.
+          const apiError = event.error as { message?: string } | undefined;
+          reportFatalErrorRef.current(apiError?.message || "The voice tutor hit an unexpected error.");
           break;
         }
       }
@@ -195,6 +228,32 @@ export function useRealtimeVoiceSession(gameId: string) {
   useEffect(() => {
     disconnectRef.current = disconnect;
   }, [disconnect]);
+
+  // Like disconnect(), but lands on status "error" with a message instead
+  // of "ended" -- see the "error" case in handleDataChannelMessage above
+  // for why that distinction matters (it's what keeps VoicePanel visible).
+  const reportFatalError = useCallback(
+    (message: string) => {
+      cleanup();
+      const sessionId = sessionIdRef.current;
+      sessionIdRef.current = null;
+      if (sessionId) {
+        endVoiceSession(sessionId, totalTokensRef.current || undefined).catch(() => {
+          // Best-effort -- the session's Redis guard has its own TTL safety net.
+        });
+      }
+      totalTokensRef.current = 0;
+      setStatus("error");
+      setError(message);
+      setIsAssistantSpeaking(false);
+      setIsUserSpeaking(false);
+    },
+    [cleanup]
+  );
+
+  useEffect(() => {
+    reportFatalErrorRef.current = reportFatalError;
+  }, [reportFatalError]);
 
   // The Stop button's action -- unlike the automatic end-of-explanation
   // disconnect above (which waits EXPLANATION_END_GRACE_MS to avoid clipping
