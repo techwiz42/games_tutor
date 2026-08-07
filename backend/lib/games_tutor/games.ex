@@ -106,6 +106,7 @@ defmodule GamesTutor.Games do
 
       case game_server(game.game_type).submit_human_move(game.id, move_str) do
         {:error, {:illegal_move, _reason}} -> {:error, :illegal_move}
+        {:error, {:engine_unavailable, _reason}} -> {:error, :engine_unavailable}
         {:ok, result} -> persist_result(game, result)
       end
     end
@@ -173,9 +174,11 @@ defmodule GamesTutor.Games do
           end
 
         game = %{game | moves: kept}
-        :ok = game_server(game.game_type).undo(game.id, replay_list(game))
 
-        game
+        case game_server(game.game_type).undo(game.id, replay_list(game)) do
+          :ok -> game
+          {:error, {:engine_unavailable, _reason}} -> Repo.rollback(:engine_unavailable)
+        end
       end)
     end
   end

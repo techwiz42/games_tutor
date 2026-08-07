@@ -193,6 +193,152 @@ defmodule GamesTutor.Go.GameServerTest do
     assert {:ok, %{status: :continue}} = GameServer.submit_human_move(game_id, "pass")
   end
 
+  describe "query/4 failure handling (finding 1b)" do
+    # go_query_timeout_ms is a test-only override (see game_server.ex's
+    # query_timeout_ms/0) -- forces a real, fast, deterministic
+    # {:error, :katago_timeout} from the live engine (300+ visits genuinely
+    # cannot complete in 1ms) instead of either mocking the port or waiting
+    # out the real 60s production timeout.
+    #
+    # Must NOT be set until *after* the server has finished its initial
+    # analysis (handle_continue/2) -- that query runs under the same
+    # timeout, and if it's forced to fail too, the server stops itself
+    # (correctly, per finding 1b's design) before ever reaching the call
+    # this test is actually trying to exercise. `board_grid/1` is a plain
+    # handle_call, which -- like any message -- only gets processed after
+    # the continue completes, so calling it once is a synchronous "wait
+    # until ready" barrier under the real, un-shortened timeout.
+    defp start_and_await_ready(game_id, opponent_config, history \\ [], human_color \\ "black") do
+      {:ok, pid} = GameServer.ensure_started(game_id, opponent_config, history, human_color)
+      {:ok, _grid} = GameServer.board_grid(game_id)
+      {:ok, pid}
+    end
+
+    defp with_forced_timeout(fun) do
+      Application.put_env(:games_tutor, :go_query_timeout_ms, 1)
+
+      try do
+        fun.()
+      after
+        Application.delete_env(:games_tutor, :go_query_timeout_ms)
+      end
+    end
+
+    test "submit_human_move replies :engine_unavailable and leaves state untouched, so the same move can be retried" do
+      game_id = new_game_id()
+      {:ok, _pid} = start_and_await_ready(game_id, %{"max_visits" => 10})
+
+      with_forced_timeout(fn ->
+        assert {:error, {:engine_unavailable, :katago_timeout}} = GameServer.submit_human_move(game_id, "E5")
+      end)
+
+      # Prove nothing was committed: with the real timeout restored, the
+      # exact same move still applies cleanly at ply 1 (not ply 2 -- if the
+      # failed attempt had mutated state, this would either fail as
+      # "occupied" or land at the wrong ply).
+      assert {:ok, %{status: :continue, human_move: human}} = GameServer.submit_human_move(game_id, "E5")
+      assert human.ply == 1
+    end
+
+    test "maybe_play_opening_move replies :engine_unavailable and can be retried" do
+      game_id = new_game_id()
+      {:ok, _pid} = start_and_await_ready(game_id, %{"max_visits" => 10}, [], "white")
+
+      with_forced_timeout(fn ->
+        assert {:error, {:engine_unavailable, :katago_timeout}} = GameServer.maybe_play_opening_move(game_id)
+      end)
+
+      assert {:ok, %{engine_move: move}} = GameServer.maybe_play_opening_move(game_id)
+      assert move.ply == 1
+    end
+
+    test "undo replies :engine_unavailable and leaves state untouched" do
+      game_id = new_game_id()
+      history = [["B", "E5"], ["W", "C3"]]
+      {:ok, _pid} = start_and_await_ready(game_id, %{"max_visits" => 10}, history)
+
+      with_forced_timeout(fn ->
+        assert {:error, {:engine_unavailable, :katago_timeout}} = GameServer.undo(game_id, [["B", "E5"]])
+      end)
+
+      # Board still reflects the ORIGINAL history (undo never applied) --
+      # both E5 and C3 present.
+      assert {:ok, grid} = GameServer.board_grid(game_id)
+      assert stone_at(grid, "E5") == :black
+      assert stone_at(grid, "C3") == :white
+    end
+
+    test "a timed-out query does not crash the GameServer -- it stays alive and registered" do
+      game_id = new_game_id()
+      {:ok, pid} = start_and_await_ready(game_id, %{"max_visits" => 10})
+
+      with_forced_timeout(fn ->
+        assert {:error, {:engine_unavailable, :katago_timeout}} = GameServer.submit_human_move(game_id, "E5")
+      end)
+
+      assert Process.alive?(pid)
+      assert [{^pid, _}] = Registry.lookup(GamesTutor.Games.GameRegistry, {:go, game_id})
+    end
+  end
+
+  describe "restart: :temporary (finding 1b)" do
+    # Process.monitor/1's :DOWN and Registry's own internal deregistration
+    # are two independent observers of the same process death -- both get
+    # notified, but not necessarily in lockstep, since Registry updates its
+    # own ETS table from ITS OWN monitor's mailbox, asynchronously relative
+    # to any other monitor (like a test's). Polling here (rather than
+    # trusting that receiving our own :DOWN means Registry has already
+    # cleaned up too) is what makes these tests deterministic instead of
+    # occasionally flaky.
+    defp wait_until_deregistered(game_id, attempts \\ 50)
+
+    defp wait_until_deregistered(_game_id, 0), do: flunk("Registry entry was never cleared")
+
+    defp wait_until_deregistered(game_id, attempts) do
+      case Registry.lookup(GamesTutor.Games.GameRegistry, {:go, game_id}) do
+        [] -> :ok
+        _ -> Process.sleep(10) && wait_until_deregistered(game_id, attempts - 1)
+      end
+    end
+
+    test "idle-eviction's deliberate :normal stop is NOT auto-restarted by the supervisor" do
+      game_id = new_game_id()
+      {:ok, pid} = start_and_await_ready(game_id, %{"max_visits" => 10})
+      ref = Process.monitor(pid)
+
+      # Exactly what handle_info(:timeout, state) does.
+      send(pid, :timeout)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
+      wait_until_deregistered(game_id)
+
+      # With the previous default (:permanent), the supervisor would have
+      # already respawned a new process under this same game_id by now --
+      # give it a moment to do so if it's going to, then confirm it hasn't.
+      Process.sleep(200)
+      assert Registry.lookup(GamesTutor.Games.GameRegistry, {:go, game_id}) == []
+    end
+
+    test "recovery after a stop goes through ensure_started/4 with fresh (not stale) history" do
+      game_id = new_game_id()
+      {:ok, pid} = start_and_await_ready(game_id, %{"max_visits" => 10})
+      ref = Process.monitor(pid)
+      send(pid, :timeout)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
+      wait_until_deregistered(game_id)
+
+      # The caller (GamesTutor.Games, in production) always re-reads
+      # history from the DB before calling ensure_started/4 -- simulated
+      # here by passing a non-empty history, unlike this game's original
+      # (empty) start args, to prove recovery isn't just replaying whatever
+      # the long-dead process happened to start with.
+      {:ok, new_pid} = GameServer.ensure_started(game_id, %{"max_visits" => 10}, [["B", "E5"]])
+      assert new_pid != pid
+
+      assert {:ok, grid} = GameServer.board_grid(game_id)
+      assert stone_at(grid, "E5") == :black
+    end
+  end
+
   # await_response/3 is `def` (not `defp`) specifically so these can call it
   # directly with a fake `port` term -- any term works, since the `receive`
   # inside only ever pattern-matches `{^port, {:data, data}}`, never touches

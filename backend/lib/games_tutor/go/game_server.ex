@@ -30,8 +30,26 @@ defmodule GamesTutor.Go.GameServer do
   per-ply pattern: `last_analysis` is the analysis of the *current*
   position (whoever is to move), reused as both the next mover's
   eval_before and (sign-flipped) the previous mover's eval_after.
+
+  `query/4` failures (`{:error, :katago_timeout}` -- see `await_response/3`)
+  never crash this process on their own: every call site replies
+  `{:error, {:engine_unavailable, reason}}` to the caller and leaves `state`
+  exactly as it was before the failed query, so a transient timeout costs
+  the player a retry, not the whole game session. The child spec is
+  `restart: :temporary` (see `Application.child_spec/1` at the bottom) --
+  this process is *only* ever meant to be resurrected via `ensure_started/4`
+  reading fresh history from the DB, never via the supervisor silently
+  respawning it with whatever `history` it happened to start with (which
+  goes stale the moment a move is played, and would otherwise also fire on
+  the deliberate `:normal` stop from idle-eviction below, defeating the
+  point of evicting it at all -- confirmed empirically, not assumed: with
+  the default `:permanent` restart this module inherited from `use
+  GenServer`, idle-eviction was silently a no-op).
   """
-  use GenServer
+  # restart: :temporary -- see the moduledoc above. Never let the
+  # DynamicSupervisor auto-respawn this with stale start args; recovery
+  # only ever happens through ensure_started/4 re-reading history from the DB.
+  use GenServer, restart: :temporary
   require Logger
 
   alias GamesTutor.Go.{Board, MoveClassifier}
@@ -136,8 +154,39 @@ defmodule GamesTutor.Go.GameServer do
       last_analysis: nil
     }
 
-    {:ok, resp} = query(state, state.history, @analysis_max_visits, :analysis)
-    {:ok, %{state | last_analysis: extract_analysis(resp)}, @idle_timeout}
+    # The initial analysis query (a real engine call, including model load
+    # on a cold KataGo process) does NOT happen here. init/1 blocking on it
+    # means DynamicSupervisor.start_child/2 -- and therefore the whole
+    # GameSupervisor, which starts every game's engine process one at a
+    # time -- blocks for that entire duration too, so one slow cold start
+    # head-of-line-blocks every other concurrent game trying to start at the
+    # same moment. Returning immediately here and doing the query in
+    # handle_continue/2 unblocks the supervisor as soon as the port is
+    # spawned; a handle_call arriving before the continue finishes still
+    # waits (correctly -- there's no analysis to answer with yet), but that
+    # wait no longer holds up anyone else's game from starting.
+    {:ok, state, {:continue, :initial_analysis}}
+  end
+
+  @impl true
+  def handle_continue(:initial_analysis, state) do
+    case query(state, state.history, @analysis_max_visits, :analysis) do
+      {:ok, resp} ->
+        {:noreply, %{state | last_analysis: extract_analysis(resp)}, @idle_timeout}
+
+      {:error, reason} ->
+        # Nothing to roll back to (there's no prior good state) and no
+        # in-flight caller reply to give a structured error to at this
+        # point -- start_link/DynamicSupervisor.start_child already
+        # returned {:ok, pid} before this ran. Stopping is the honest
+        # response: a caller mid-`GenServer.call` at this moment sees the
+        # ordinary `:noproc`/timeout an exited process produces, and the
+        # *next* ensure_started/4 for this game gets a clean fresh attempt
+        # (restart: :temporary means the supervisor won't loop retrying
+        # this on its own).
+        Logger.error("Go GameServer for #{state.game_id}: initial analysis failed (#{inspect(reason)}), stopping")
+        {:stop, {:initial_analysis_failed, reason}, state}
+    end
   end
 
   @impl true
@@ -177,20 +226,24 @@ defmodule GamesTutor.Go.GameServer do
 
   @impl true
   def handle_call({:undo, new_history}, _from, state) do
-    {:ok, resp} = query(state, new_history, @analysis_max_visits, :analysis)
+    case query(state, new_history, @analysis_max_visits, :analysis) do
+      {:error, reason} ->
+        reply_engine_unavailable(state, reason)
 
-    state = %{
-      state
-      | history: new_history,
-        board: rebuild_board(new_history),
-        consecutive_passes: trailing_pass_count(new_history),
-        next_ply: length(new_history) + 1,
-        resigned: false,
-        last_move_at: System.monotonic_time(:millisecond),
-        last_analysis: extract_analysis(resp)
-    }
+      {:ok, resp} ->
+        new_state = %{
+          state
+          | history: new_history,
+            board: rebuild_board(new_history),
+            consecutive_passes: trailing_pass_count(new_history),
+            next_ply: length(new_history) + 1,
+            resigned: false,
+            last_move_at: System.monotonic_time(:millisecond),
+            last_analysis: extract_analysis(resp)
+        }
 
-    {:reply, :ok, state, @idle_timeout}
+        {:reply, :ok, new_state, @idle_timeout}
+    end
   end
 
   @impl true
@@ -210,6 +263,16 @@ defmodule GamesTutor.Go.GameServer do
 
   defp game_over?(state), do: state.resigned or state.consecutive_passes >= 2
 
+  # A query/4 failure (e.g. {:error, :katago_timeout}) replies to the
+  # caller and keeps this process alive with `state` untouched -- see the
+  # moduledoc. GamesTutor.Games/FallbackController turn this into a plain
+  # {:error, :engine_unavailable} at the HTTP boundary; the reason is kept
+  # here only for the log line.
+  defp reply_engine_unavailable(state, reason) do
+    Logger.warning("Go GameServer for #{state.game_id}: KataGo query failed (#{inspect(reason)})")
+    {:reply, {:error, {:engine_unavailable, reason}}, state, @idle_timeout}
+  end
+
   defp do_submit_human_move(coord_str, state) do
     think_time_ms = System.monotonic_time(:millisecond) - state.last_move_at
 
@@ -223,6 +286,9 @@ defmodule GamesTutor.Go.GameServer do
         new_history = state.history ++ [[human_color_tag(state), coord_str]]
 
         case query(state, new_history, @analysis_max_visits, :analysis) do
+          {:error, reason} ->
+            reply_engine_unavailable(state, reason)
+
           {:ok, %{"error" => reason}} ->
             {:reply, {:error, {:illegal_move, reason}}, state, @idle_timeout}
 
@@ -247,7 +313,7 @@ defmodule GamesTutor.Go.GameServer do
               think_time_ms: think_time_ms
             }
 
-            state = %{
+            moved_state = %{
               state
               | history: new_history,
                 board: new_board,
@@ -257,104 +323,139 @@ defmodule GamesTutor.Go.GameServer do
 
             if new_passes >= 2 do
               status = final_status(analysis)
-              state = %{state | next_ply: state.next_ply + 1, last_move_at: System.monotonic_time(:millisecond)}
-              {:reply, {:ok, %{status: status, human_move: human_move, engine_move: nil}}, state, @idle_timeout}
+
+              moved_state = %{
+                moved_state
+                | next_ply: state.next_ply + 1,
+                  last_move_at: System.monotonic_time(:millisecond)
+              }
+
+              {:reply, {:ok, %{status: status, human_move: human_move, engine_move: nil}}, moved_state, @idle_timeout}
             else
-              play_opponent_reply(state, human_move, System.monotonic_time(:millisecond))
+              play_opponent_reply(state, moved_state, human_move, System.monotonic_time(:millisecond))
             end
         end
     end
   end
 
-  defp play_opponent_reply(state, human_move, move_started_at) do
-    {:ok, pick_resp} = query(state, state.history, state.opponent_max_visits, :opponent_move)
-    engine_coord_str = (List.first(pick_resp["moveInfos"]) || %{})["move"] || "pass"
-    engine_coord = Board.parse_coord(engine_coord_str)
+  # `original_state` (pre-human-move) vs. `moved_state` (human move already
+  # applied locally): if either query below fails, this replies with an
+  # error and rolls all the way back to `original_state`, as if the human's
+  # move never happened -- deliberately, not just for convenience. The
+  # human's move is only ever persisted by the caller (GamesTutor.Games)
+  # after seeing a {:ok, ...} reply, so keeping this GenServer's own state
+  # in lockstep with "nothing committed yet" means a failed opponent-reply
+  # query never leaves the in-memory game one move ahead of the DB. The
+  # player just retries the same move.
+  defp play_opponent_reply(original_state, moved_state, human_move, move_started_at) do
+    case query(moved_state, moved_state.history, moved_state.opponent_max_visits, :opponent_move) do
+      {:error, reason} ->
+        reply_engine_unavailable(original_state, reason)
 
-    new_history = state.history ++ [[engine_color_tag(state), engine_coord_str]]
-    {:ok, eval_resp} = query(state, new_history, @analysis_max_visits, :analysis)
+      {:ok, pick_resp} ->
+        engine_coord_str = (List.first(pick_resp["moveInfos"]) || %{})["move"] || "pass"
+        engine_coord = Board.parse_coord(engine_coord_str)
+        new_history = moved_state.history ++ [[engine_color_tag(moved_state), engine_coord_str]]
 
-    {new_board, _captured} = Board.apply_move(state.board, engine_color_atom(state), engine_coord)
-    new_passes = pass_delta(engine_coord_str, state.consecutive_passes)
-    analysis = extract_analysis(eval_resp)
+        case query(moved_state, new_history, @analysis_max_visits, :analysis) do
+          {:error, reason} ->
+            reply_engine_unavailable(original_state, reason)
 
-    eval_before_engine = round_centipoints(state.last_analysis.score_lead)
-    eval_after_engine = round_centipoints(-analysis.score_lead)
-    loss = max(eval_before_engine - eval_after_engine, 0)
+          {:ok, eval_resp} ->
+            {new_board, _captured} = Board.apply_move(moved_state.board, engine_color_atom(moved_state), engine_coord)
+            new_passes = pass_delta(engine_coord_str, moved_state.consecutive_passes)
+            analysis = extract_analysis(eval_resp)
 
-    engine_move = %{
-      ply: state.next_ply + 1,
-      player: "engine",
-      notation: engine_coord_str,
-      uci: engine_coord_str,
-      fen_after: board_json(new_board),
-      eval_before: eval_before_engine,
-      eval_after: eval_after_engine,
-      loss: loss,
-      engine_best_move: state.last_analysis.best_move,
-      classification: Atom.to_string(MoveClassifier.classify(loss)),
-      think_time_ms: System.monotonic_time(:millisecond) - move_started_at
-    }
+            eval_before_engine = round_centipoints(moved_state.last_analysis.score_lead)
+            eval_after_engine = round_centipoints(-analysis.score_lead)
+            loss = max(eval_before_engine - eval_after_engine, 0)
 
-    status = if new_passes >= 2, do: final_status(analysis), else: :continue
+            engine_move = %{
+              ply: moved_state.next_ply + 1,
+              player: "engine",
+              notation: engine_coord_str,
+              uci: engine_coord_str,
+              fen_after: board_json(new_board),
+              eval_before: eval_before_engine,
+              eval_after: eval_after_engine,
+              loss: loss,
+              engine_best_move: moved_state.last_analysis.best_move,
+              classification: Atom.to_string(MoveClassifier.classify(loss)),
+              think_time_ms: System.monotonic_time(:millisecond) - move_started_at
+            }
 
-    state = %{
-      state
-      | history: new_history,
-        board: new_board,
-        consecutive_passes: new_passes,
-        next_ply: state.next_ply + 2,
-        last_move_at: System.monotonic_time(:millisecond),
-        last_analysis: analysis
-    }
+            status = if new_passes >= 2, do: final_status(analysis), else: :continue
 
-    {:reply, {:ok, %{status: status, human_move: human_move, engine_move: engine_move}}, state, @idle_timeout}
+            final_state = %{
+              moved_state
+              | history: new_history,
+                board: new_board,
+                consecutive_passes: new_passes,
+                next_ply: moved_state.next_ply + 2,
+                last_move_at: System.monotonic_time(:millisecond),
+                last_analysis: analysis
+            }
+
+            {:reply, {:ok, %{status: status, human_move: human_move, engine_move: engine_move}}, final_state,
+             @idle_timeout}
+        end
+    end
   end
 
   # Black moves first in Go -- when the human chose White, the engine (as
   # Black) must play move 1 itself, against the empty board/history.
   defp play_opening_engine_move(state) do
     move_started_at = System.monotonic_time(:millisecond)
-    {:ok, pick_resp} = query(state, [], state.opponent_max_visits, :opponent_move)
-    engine_coord_str = (List.first(pick_resp["moveInfos"]) || %{})["move"] || "pass"
-    engine_coord = Board.parse_coord(engine_coord_str)
 
-    new_history = [[engine_color_tag(state), engine_coord_str]]
-    {:ok, eval_resp} = query(state, new_history, @analysis_max_visits, :analysis)
+    case query(state, [], state.opponent_max_visits, :opponent_move) do
+      {:error, reason} ->
+        reply_engine_unavailable(state, reason)
 
-    {new_board, _captured} = Board.apply_move(state.board, engine_color_atom(state), engine_coord)
-    new_passes = pass_delta(engine_coord_str, 0)
-    analysis = extract_analysis(eval_resp)
+      {:ok, pick_resp} ->
+        engine_coord_str = (List.first(pick_resp["moveInfos"]) || %{})["move"] || "pass"
+        engine_coord = Board.parse_coord(engine_coord_str)
+        new_history = [[engine_color_tag(state), engine_coord_str]]
 
-    eval_before_engine = round_centipoints(state.last_analysis.score_lead)
-    eval_after_engine = round_centipoints(-analysis.score_lead)
-    loss = max(eval_before_engine - eval_after_engine, 0)
+        case query(state, new_history, @analysis_max_visits, :analysis) do
+          {:error, reason} ->
+            reply_engine_unavailable(state, reason)
 
-    engine_move = %{
-      ply: 1,
-      player: "engine",
-      notation: engine_coord_str,
-      uci: engine_coord_str,
-      fen_after: board_json(new_board),
-      eval_before: eval_before_engine,
-      eval_after: eval_after_engine,
-      loss: loss,
-      engine_best_move: state.last_analysis.best_move,
-      classification: Atom.to_string(MoveClassifier.classify(loss)),
-      think_time_ms: System.monotonic_time(:millisecond) - move_started_at
-    }
+          {:ok, eval_resp} ->
+            {new_board, _captured} = Board.apply_move(state.board, engine_color_atom(state), engine_coord)
+            new_passes = pass_delta(engine_coord_str, 0)
+            analysis = extract_analysis(eval_resp)
 
-    state = %{
-      state
-      | history: new_history,
-        board: new_board,
-        consecutive_passes: new_passes,
-        next_ply: 2,
-        last_move_at: System.monotonic_time(:millisecond),
-        last_analysis: analysis
-    }
+            eval_before_engine = round_centipoints(state.last_analysis.score_lead)
+            eval_after_engine = round_centipoints(-analysis.score_lead)
+            loss = max(eval_before_engine - eval_after_engine, 0)
 
-    {:reply, {:ok, %{engine_move: engine_move}}, state, @idle_timeout}
+            engine_move = %{
+              ply: 1,
+              player: "engine",
+              notation: engine_coord_str,
+              uci: engine_coord_str,
+              fen_after: board_json(new_board),
+              eval_before: eval_before_engine,
+              eval_after: eval_after_engine,
+              loss: loss,
+              engine_best_move: state.last_analysis.best_move,
+              classification: Atom.to_string(MoveClassifier.classify(loss)),
+              think_time_ms: System.monotonic_time(:millisecond) - move_started_at
+            }
+
+            new_state = %{
+              state
+              | history: new_history,
+                board: new_board,
+                consecutive_passes: new_passes,
+                next_ply: 2,
+                last_move_at: System.monotonic_time(:millisecond),
+                last_analysis: analysis
+            }
+
+            {:reply, {:ok, %{engine_move: engine_move}}, new_state, @idle_timeout}
+        end
+    end
   end
 
   ## KataGo protocol
@@ -393,10 +494,16 @@ defmodule GamesTutor.Go.GameServer do
         receive do
           {^port, {:data, data}} -> await_response(port, expected_id, buffer <> data)
         after
-          @query_timeout -> {:error, :katago_timeout}
+          query_timeout_ms() -> {:error, :katago_timeout}
         end
     end
   end
+
+  # Overridable (default @query_timeout, 60s) so tests can force a fast,
+  # deterministic {:error, :katago_timeout} instead of actually waiting 60s
+  # for a response that will never come -- see game_server_test.exs's
+  # "query failure" describe block.
+  defp query_timeout_ms, do: Application.get_env(:games_tutor, :go_query_timeout_ms, @query_timeout)
 
   # Pops one complete newline-terminated line off the front of `buffer`. A
   # single {:data, ...} chunk from the port can contain more than one

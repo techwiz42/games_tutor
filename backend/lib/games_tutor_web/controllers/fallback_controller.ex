@@ -53,6 +53,12 @@ defmodule GamesTutorWeb.FallbackController do
     conn |> put_status(:unprocessable_entity) |> json(%{detail: "Game is already over", code: "game_over"})
   end
 
+  def call(conn, {:error, :engine_unavailable}) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{detail: "The game engine is temporarily unavailable -- please try again", code: "engine_unavailable"})
+  end
+
   def call(conn, {:error, :hint_refused_calibration}) do
     conn
     |> put_status(:forbidden)
