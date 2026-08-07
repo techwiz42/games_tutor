@@ -72,6 +72,34 @@ defmodule GamesTutor.Go.GameServer do
   point of evicting it at all -- confirmed empirically, not assumed: with
   the default `:permanent` restart this module inherited from `use
   GenServer`, idle-eviction was silently a no-op).
+
+  ## Opponent move selection (engine-layer review, finding 4)
+
+  The opponent's move used to be `List.first(moveInfos)` -- KataGo's own
+  top pick at `opponent_max_visits` (20 by default). Verified empirically,
+  not assumed: at 20 visits this is barely distinguishable from just
+  always playing the single highest raw policy-network prior (matched it
+  9/10 times across a sample of real positions), and its actual cost
+  against a 1000-visit reference averaged ~29 centipoints -- solidly
+  `:best` on this module's own classification scale. Unlike Stockfish
+  (chess's engine), whose strength is search-dominated, KataGo's is
+  policy-network-dominated, so cutting search depth the way chess's Skill
+  Level does barely weakens it at all -- the "weak" opponent was, in
+  practice, playing close to full strength regardless of maxVisits.
+
+  `pick_opponent_move/2` now samples from `moveInfos` weighted by `prior`
+  with a temperature parameter (`@opponent_temperature`) instead of
+  always taking the top candidate. This is a first-pass fix, not a
+  calibrated one -- `@opponent_temperature`'s value is a reasonable
+  starting point (temperature 1.0 samples proportionally to raw prior,
+  rather than the review's other candidate fixes: `playoutDoublingAdvantage`
+  or KataGo's human-play-imitating `humanSLProfile`, both discussed but
+  not implemented -- see the review), not the result of measuring what
+  temperature actually produces beginner-appropriate play the way Phase 0
+  measured the noise floor. That calibration -- and wiring temperature to
+  each student's estimated rating the way `opponent_max_visits` already
+  is (see `GamesTutor.Games.resolve_opponent_config/3`) -- is follow-up
+  work, deliberately out of scope here.
   """
   # restart: :temporary -- see the moduledoc above. Never let the
   # DynamicSupervisor auto-respawn this with stale start args; recovery
@@ -87,6 +115,14 @@ defmodule GamesTutor.Go.GameServer do
   @default_opponent_max_visits 20
   @idle_timeout :timer.minutes(30)
   @query_timeout 60_000
+
+  # See the moduledoc's "Opponent move selection" section -- an
+  # un-calibrated first-pass value, not tuned against measured play
+  # quality. 1.0 samples moves proportionally to their raw policy prior;
+  # lower values move toward always picking the top candidate (the old
+  # behavior), higher values move toward uniform-random among whatever
+  # moveInfos happened to receive search visits.
+  @opponent_temperature 1.0
 
   # ---- Public API ----
 
@@ -317,6 +353,48 @@ defmodule GamesTutor.Go.GameServer do
     {:reply, {:error, {:engine_unavailable, reason}}, state, @idle_timeout}
   end
 
+  defp pick_opponent_move(move_infos) do
+    sample_move_weighted_by_prior(move_infos || [], @opponent_temperature)
+  end
+
+  # Public (not `defp`) so tests can exercise the sampling distribution
+  # directly with a controlled temperature and a seeded RNG -- see finding
+  # 4 in the moduledoc. `move_infos` is a list of KataGo moveInfos maps
+  # (each with a "move" and "prior" key, as returned raw from the engine);
+  # weights each candidate by prior^(1/temperature) and samples one.
+  # temperature -> 0 converges to the old List.first/1 behavior (always
+  # the top prior); temperature -> infinity converges to uniform-random
+  # among whatever moveInfos happened to receive search visits.
+  @doc false
+  def sample_move_weighted_by_prior([], _temperature), do: "pass"
+
+  def sample_move_weighted_by_prior(move_infos, temperature) do
+    weighted =
+      Enum.map(move_infos, fn m ->
+        # Floor above 0 -- a literal zero prior would be a legitimate
+        # weight of 0 (never picked), but :math.pow(0.0, exponent) for a
+        # negative/fractional exponent is undefined behavior territory,
+        # not a case worth risking for what should just mean "essentially
+        # never".
+        prior = max(m["prior"] || 0.0, 1.0e-9)
+        {m["move"], :math.pow(prior, 1.0 / temperature)}
+      end)
+
+    total_weight = weighted |> Enum.map(&elem(&1, 1)) |> Enum.sum()
+    roll = :rand.uniform() * total_weight
+
+    {picked, _cumulative} =
+      Enum.reduce_while(weighted, {nil, 0.0}, fn {move, weight}, {_prev, cumulative} ->
+        cumulative = cumulative + weight
+        if roll <= cumulative, do: {:halt, {move, cumulative}}, else: {:cont, {nil, cumulative}}
+      end)
+
+    # picked is nil only via floating-point rounding (the cumulative sum
+    # landing a hair under `roll` on the very last element) -- the last
+    # move is the correct fallback, not an error case.
+    picked || elem(List.last(weighted), 0)
+  end
+
   defp do_submit_human_move(coord_str, state) do
     think_time_ms = System.monotonic_time(:millisecond) - state.last_move_at
 
@@ -399,7 +477,7 @@ defmodule GamesTutor.Go.GameServer do
         reply_engine_unavailable(original_state, reason)
 
       {:ok, pick_resp} ->
-        engine_coord_str = (List.first(pick_resp["moveInfos"]) || %{})["move"] || "pass"
+        engine_coord_str = pick_opponent_move(pick_resp["moveInfos"])
         engine_coord = Board.parse_coord(engine_coord_str)
         new_history = moved_state.history ++ [[engine_color_tag(moved_state), engine_coord_str]]
 
@@ -461,7 +539,7 @@ defmodule GamesTutor.Go.GameServer do
         reply_engine_unavailable(state, reason)
 
       {:ok, pick_resp} ->
-        engine_coord_str = (List.first(pick_resp["moveInfos"]) || %{})["move"] || "pass"
+        engine_coord_str = pick_opponent_move(pick_resp["moveInfos"])
         engine_coord = Board.parse_coord(engine_coord_str)
         new_history = [[engine_color_tag(state), engine_coord_str]]
 

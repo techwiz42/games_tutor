@@ -352,6 +352,67 @@ defmodule GamesTutor.Go.GameServerTest do
     end
   end
 
+  describe "sample_move_weighted_by_prior/2 -- finding 4 (temperature-weighted opponent move selection)" do
+    test "empty moveInfos falls back to pass" do
+      assert GameServer.sample_move_weighted_by_prior([], 1.0) == "pass"
+    end
+
+    test "a single candidate is always picked regardless of temperature" do
+      move_infos = [%{"move" => "D4", "prior" => 0.3}]
+
+      for temperature <- [0.1, 1.0, 5.0] do
+        assert GameServer.sample_move_weighted_by_prior(move_infos, temperature) == "D4"
+      end
+    end
+
+    test "very low temperature converges to always picking the highest-prior move (the old List.first/1 behavior)" do
+      move_infos = [
+        %{"move" => "D4", "prior" => 0.6},
+        %{"move" => "C3", "prior" => 0.3},
+        %{"move" => "E5", "prior" => 0.1}
+      ]
+
+      picks = for _ <- 1..200, do: GameServer.sample_move_weighted_by_prior(move_infos, 0.01)
+      assert Enum.all?(picks, &(&1 == "D4"))
+    end
+
+    test "sampling frequency roughly tracks each candidate's prior weight at temperature 1.0" do
+      move_infos = [
+        %{"move" => "D4", "prior" => 0.6},
+        %{"move" => "C3", "prior" => 0.3},
+        %{"move" => "E5", "prior" => 0.1}
+      ]
+
+      n = 5000
+      freq = for(_ <- 1..n, do: GameServer.sample_move_weighted_by_prior(move_infos, 1.0)) |> Enum.frequencies()
+
+      # A randomized statistical test -- generous tolerance, not an exact match.
+      assert_in_delta Map.get(freq, "D4", 0) / n, 0.6, 0.05
+      assert_in_delta Map.get(freq, "C3", 0) / n, 0.3, 0.05
+      assert_in_delta Map.get(freq, "E5", 0) / n, 0.1, 0.05
+    end
+
+    test "higher temperature flattens a skewed distribution toward uniform" do
+      move_infos = [
+        %{"move" => "D4", "prior" => 0.9},
+        %{"move" => "C3", "prior" => 0.05},
+        %{"move" => "E5", "prior" => 0.05}
+      ]
+
+      n = 5000
+      freq = for(_ <- 1..n, do: GameServer.sample_move_weighted_by_prior(move_infos, 20.0)) |> Enum.frequencies()
+
+      assert_in_delta Map.get(freq, "D4", 0) / n, 0.333, 0.08
+      assert_in_delta Map.get(freq, "C3", 0) / n, 0.333, 0.08
+      assert_in_delta Map.get(freq, "E5", 0) / n, 0.333, 0.08
+    end
+
+    test "a missing prior field is treated as effectively zero, not a crash" do
+      move_infos = [%{"move" => "D4", "prior" => 0.5}, %{"move" => "C3"}]
+      assert GameServer.sample_move_weighted_by_prior(move_infos, 1.0) in ["D4", "C3"]
+    end
+  end
+
   describe "restart: :temporary (finding 1b)" do
     # Process.monitor/1's :DOWN and Registry's own internal deregistration
     # are two independent observers of the same process death -- both get
