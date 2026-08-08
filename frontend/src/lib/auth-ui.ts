@@ -88,6 +88,20 @@ export function segmentedOption(active: boolean): string {
         "hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors";
 }
 
+// ---- Long-form content (attribution / privacy / terms) ----
+
+export const legalPageInner = "max-w-3xl mx-auto";
+
+export const proseHeading2 = "text-lg font-semibold text-zinc-900 dark:text-zinc-50 mt-8 mb-2";
+
+export const proseBody = "text-zinc-700 dark:text-zinc-300 leading-relaxed";
+
+export const proseList = "list-disc pl-5 space-y-2 text-zinc-700 dark:text-zinc-300 leading-relaxed";
+
+export const draftBanner =
+  "rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 " +
+  "px-4 py-3 text-sm text-amber-800 dark:text-amber-300 mb-8";
+
 const CLASSIFICATION_STYLES: Record<string, string> = {
   best: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400",
   good: "bg-teal-100 text-teal-700 dark:bg-teal-950/50 dark:text-teal-400",

@@ -47,6 +47,9 @@ export default function RegisterPage() {
             We sent a confirmation link to <strong>{email}</strong>. Click it to activate your
             account and log in.
           </p>
+          <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
+            Don&apos;t see it? Check your spam or junk folder.
+          </p>
           <p className="mt-6 text-sm">
             <a href="/login" className={authLink}>
               Back to login
