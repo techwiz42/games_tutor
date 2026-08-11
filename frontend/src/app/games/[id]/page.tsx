@@ -262,7 +262,7 @@ function GameContent() {
             {game.game_type === "go" ? (
               <GoBoardPanel game={game} submitting={submitting} onMove={submitMoveAndUpdate} />
             ) : (
-              <div style={{ width: 400 }}>
+              <div className="w-full max-w-[400px] mx-auto">
                 <Chessboard
                   options={{
                     position: game.fen,

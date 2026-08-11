@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ComponentType } from "react";
+import { useEffect, useRef, useState, type ComponentType } from "react";
 import { BoundedGoban } from "@sabaki/shudan";
 import "@sabaki/shudan/css/goban.css";
 import { parseGoBoard, ownershipToPaintMap, vertexToCoord } from "@/lib/go-coords";
@@ -13,6 +13,14 @@ import { buttonSecondary } from "@/lib/auth-ui";
 // correctly at runtime (confirmed in the Phase 0 spike).
 const Goban = BoundedGoban as unknown as ComponentType<Record<string, unknown>>;
 
+// BoundedGoban only resizes itself in response to its maxWidth/maxHeight
+// props changing (see its componentDidUpdate) -- it does not observe its
+// container's CSS size on its own, unlike react-chessboard's board (which
+// is a CSS grid that fills its parent). So a plain responsive wrapper div
+// isn't enough here; the container's actual width has to be measured and
+// fed back in as maxWidth/maxHeight.
+const MAX_BOARD_SIZE = 400;
+
 type Props = {
   game: Game;
   submitting: boolean;
@@ -23,6 +31,19 @@ export default function GoBoardPanel({ game, submitting, onMove }: Props) {
   const { size, grid, ownership } = parseGoBoard(game.fen);
   const interactive = game.status === "in_progress" && !submitting;
   const [showTerritory, setShowTerritory] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [boardSize, setBoardSize] = useState(MAX_BOARD_SIZE);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (width) setBoardSize(width);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const handleVertexClick = (_evt: MouseEvent, vertex: [number, number]) => {
     if (!interactive) return;
@@ -32,10 +53,10 @@ export default function GoBoardPanel({ game, submitting, onMove }: Props) {
 
   return (
     <div>
-      <div style={{ width: 400 }}>
+      <div ref={containerRef} className="w-full max-w-[400px] mx-auto">
         <Goban
-          maxWidth={400}
-          maxHeight={400}
+          maxWidth={boardSize}
+          maxHeight={boardSize}
           signMap={grid}
           paintMap={showTerritory && ownership ? ownershipToPaintMap(ownership, size) : undefined}
           showCoordinates={true}
