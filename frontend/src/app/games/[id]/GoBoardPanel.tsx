@@ -3,9 +3,9 @@
 import { useEffect, useRef, useState, type ComponentType } from "react";
 import { BoundedGoban } from "@sabaki/shudan";
 import "@sabaki/shudan/css/goban.css";
-import { parseGoBoard, ownershipToPaintMap, vertexToCoord } from "@/lib/go-coords";
+import { parseGoBoard, ownershipToPaintMap, vertexToCoord, coordToVertex } from "@/lib/go-coords";
 import type { Game } from "@/lib/games-api";
-import { buttonSecondary } from "@/lib/auth-ui";
+import { buttonSecondary, mutedText } from "@/lib/auth-ui";
 
 // Shudan is a Preact component (aliased to react at the bundler level --
 // see next.config.ts); its own .d.ts still types against preact's
@@ -25,14 +25,19 @@ type Props = {
   game: Game;
   submitting: boolean;
   onMove: (coord: string) => void;
+  // Instruction mode's suggested move (e.g. "D5" or "pass"), or null/undefined
+  // when instruction mode is off or no hint has loaded yet -- see page.tsx.
+  hint?: string | null;
 };
 
-export default function GoBoardPanel({ game, submitting, onMove }: Props) {
+export default function GoBoardPanel({ game, submitting, onMove, hint }: Props) {
   const { size, grid, ownership } = parseGoBoard(game.fen);
   const interactive = game.status === "in_progress" && !submitting;
   const [showTerritory, setShowTerritory] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const [boardSize, setBoardSize] = useState(MAX_BOARD_SIZE);
+
+  const hintVertex = hint ? coordToVertex(hint, size) : null;
 
   useEffect(() => {
     const el = containerRef.current;
@@ -55,16 +60,19 @@ export default function GoBoardPanel({ game, submitting, onMove }: Props) {
     <div>
       <div ref={containerRef} className="w-full max-w-[400px] mx-auto">
         <Goban
+          className="instruction-goban"
           maxWidth={boardSize}
           maxHeight={boardSize}
           signMap={grid}
           paintMap={showTerritory && ownership ? ownershipToPaintMap(ownership, size) : undefined}
+          selectedVertices={hintVertex ? [hintVertex] : []}
           showCoordinates={true}
           fuzzyStonePlacement={true}
           animateStonePlacement={true}
           onVertexClick={handleVertexClick}
         />
       </div>
+      {hint === "pass" && <p className={`${mutedText} text-center mt-1`}>Suggested: pass</p>}
       <div className="flex gap-2 mt-3">
         <button onClick={() => interactive && onMove("pass")} disabled={!interactive} className={buttonSecondary}>
           Pass

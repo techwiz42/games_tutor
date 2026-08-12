@@ -24,3 +24,24 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Instruction mode's suggested-move highlight -- shared keyframe used both
+   inline (react-chessboard's squareStyles, see games/[id]/page.tsx) and via
+   this class (Shudan's built-in vertex selection box, see GoBoardPanel.tsx).
+   Static (no animation) under prefers-reduced-motion -- still clearly
+   highlighted, just not blinking. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes instruction-blink {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.25;
+    }
+  }
+
+  .instruction-goban .shudan-selection {
+    animation: instruction-blink 1.1s ease-in-out infinite;
+  }
+}

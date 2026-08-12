@@ -11,6 +11,22 @@ export function vertexToCoord(x: number, y: number, size: number): string {
   return `${COLUMNS[x]}${rank}`;
 }
 
+// Inverse of vertexToCoord -- turns a backend move coordinate (e.g. "D5",
+// from GamesTutor.Go.GameServer's hint/1) back into a Shudan vertex for
+// highlighting. Returns null for "pass" (nothing to highlight) or an
+// unparseable coordinate.
+export function coordToVertex(coord: string, size: number): [number, number] | null {
+  const match = coord.match(/^([A-Za-z]+)(\d+)$/);
+  if (!match) return null;
+
+  const [, letters, rankStr] = match;
+  const x = COLUMNS.indexOf(letters.toUpperCase());
+  const rank = parseInt(rankStr, 10);
+  if (x === -1) return null;
+
+  return [x, size - rank];
+}
+
 export type Stone = 1 | -1 | 0;
 
 // `ownership` is optional -- absent for chess games entirely, and for any

@@ -6,7 +6,7 @@ import dynamic from "next/dynamic";
 import { Chessboard } from "react-chessboard";
 import type { PieceDropHandlerArgs } from "react-chessboard";
 import { ProtectedRoute } from "@/lib/protected-route";
-import { getGame, submitMove, resignGame, undoMove, Game, Move, SkillProfile } from "@/lib/games-api";
+import { getGame, submitMove, resignGame, undoMove, requestHint, Game, Move, SkillProfile } from "@/lib/games-api";
 import { useRealtimeVoiceSession, VoiceStatus } from "@/lib/use-realtime-voice-session";
 import {
   pageWrap,
@@ -14,12 +14,25 @@ import {
   navBrand,
   navBrandAccent,
   card,
+  buttonPrimary,
   buttonSecondary,
   buttonDanger,
   linkButton,
   mutedText,
   classificationBadgeClass,
 } from "@/lib/auth-ui";
+
+// Instruction mode's suggested-move highlight for the chess board -- the
+// `instruction-blink` keyframes are only defined under
+// `@media (prefers-reduced-motion: no-preference)` (see globals.css), so an
+// `animation-name` that doesn't resolve to anything is simply inert per the
+// CSS animations spec; no separate reduced-motion branch needed here. The Go
+// board gets the same behavior via a CSS class instead (see GoBoardPanel.tsx),
+// since Shudan's selection box isn't reachable through inline styles.
+const HINT_SQUARE_STYLE: React.CSSProperties = {
+  backgroundColor: "rgba(79, 70, 229, 0.55)",
+  animation: "instruction-blink 1.1s ease-in-out infinite",
+};
 
 // Shudan's render is non-deterministic between server and client passes (an
 // internal `random` prop for fuzzy stone placement), which causes a
@@ -141,6 +154,9 @@ function GameContent() {
   const [game, setGame] = useState<Game | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [instructionMode, setInstructionMode] = useState(false);
+  const [hint, setHint] = useState<string | null>(null);
+  const [hintError, setHintError] = useState<string | null>(null);
   const voice = useRealtimeVoiceSession(id);
   const movesScrollRef = useRef<HTMLDivElement>(null);
 
@@ -158,6 +174,39 @@ function GameContent() {
     const el = movesScrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [game?.moves.length]);
+
+  // Re-fetches whenever the position actually changes (game.fen), which
+  // covers both a fresh human move and a takeback -- free on the backend
+  // (GameServer.hint/1 reuses the analysis already cached from the last
+  // move, no extra engine query), but still real network + rate-limit cost,
+  // so only fetch while instruction mode is actually on. Calibration games
+  // refuse hints server-side (they measure unaided skill), so this doesn't
+  // even try for those.
+  useEffect(() => {
+    if (!instructionMode || !game || game.status !== "in_progress" || game.is_calibration) {
+      setHint(null);
+      setHintError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setHintError(null);
+
+    requestHint(id)
+      .then((res) => {
+        if (!cancelled) setHint(res.move);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setHint(null);
+          setHintError(err instanceof Error ? err.message : "Couldn't get a hint");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [instructionMode, game?.fen, game?.status, game?.is_calibration, id]);
 
   const submitMoveAndUpdate = useCallback(
     (moveStr: string) => {
@@ -240,10 +289,29 @@ function GameContent() {
     );
   };
 
+  const handleExplainHint = () => {
+    if (!hint) return;
+    voice.askAboutMove(
+      hint === "pass"
+        ? "Please explain why passing is the best move in this position."
+        : `Please explain why ${hint} is the best move in this position.`
+    );
+  };
+
   if (error && !game) return <div className={`${pageWrap} text-red-600 dark:text-red-400`}>{error}</div>;
   if (!game) return <div className={pageWrap}>Loading...</div>;
 
   const canUndo = game.status !== "resigned" && game.status !== "aborted" && game.moves.length > 0 && !game.is_calibration;
+
+  // Hidden mid-round-trip (not just cleared) so a stale hint from the
+  // position that's about to disappear never flashes/gets explained --
+  // `hint` state itself stays put until the next position's fetch resolves,
+  // simplifying the fetch effect above.
+  const visibleHint = instructionMode && !submitting ? hint : null;
+  const hintSquareStyles =
+    visibleHint && visibleHint !== "pass"
+      ? { [visibleHint.slice(0, 2)]: HINT_SQUARE_STYLE, [visibleHint.slice(2, 4)]: HINT_SQUARE_STYLE }
+      : undefined;
 
   return (
     <div className={pageWrap}>
@@ -259,8 +327,31 @@ function GameContent() {
       <main className="max-w-5xl mx-auto grid gap-6 md:grid-cols-[auto_1fr] items-start">
         <div>
           <div className={card}>
+            {!game.is_calibration && game.status === "in_progress" && (
+              <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+                <button
+                  onClick={() => setInstructionMode((v) => !v)}
+                  className={instructionMode ? buttonPrimary : buttonSecondary}
+                >
+                  Instruction mode: {instructionMode ? "on" : "off"}
+                </button>
+                {instructionMode && (
+                  <button
+                    onClick={handleExplainHint}
+                    disabled={!visibleHint}
+                    className={buttonSecondary}
+                  >
+                    Explain
+                  </button>
+                )}
+              </div>
+            )}
+            {instructionMode && hintError && (
+              <p className="text-sm text-red-600 dark:text-red-400 mb-3">{hintError}</p>
+            )}
+
             {game.game_type === "go" ? (
-              <GoBoardPanel game={game} submitting={submitting} onMove={submitMoveAndUpdate} />
+              <GoBoardPanel game={game} submitting={submitting} onMove={submitMoveAndUpdate} hint={visibleHint} />
             ) : (
               <div className="w-full max-w-[400px] mx-auto">
                 <Chessboard
@@ -270,6 +361,7 @@ function GameContent() {
                     allowDragging: game.status === "in_progress" && !submitting,
                     canDragPiece: ({ piece }) => piece.pieceType.startsWith(game.human_color === "black" ? "b" : "w"),
                     onPieceDrop: handleDrop,
+                    squareStyles: hintSquareStyles,
                   }}
                 />
               </div>
