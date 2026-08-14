@@ -24,8 +24,24 @@ defmodule GamesTutor.Chess.GameServer do
   Legality is checked by `binbo:move/2` itself (pure Erlang, no subprocess)
   before any engine call is made, so illegal input never wastes an analysis
   pass.
+
+  The child spec is `restart: :temporary` (mirrors `GamesTutor.Go.GameServer` --
+  see its moduledoc for the full story): this process is *only* ever meant to
+  be resurrected via `ensure_started/4` reading fresh moves/human_color from
+  the DB, never via the supervisor silently respawning it with whatever
+  `moves` it happened to start with. That list goes stale the moment a move
+  is played, and with the default `:permanent` restart this module used to
+  inherit from `use GenServer`, it also fired on the deliberate `:normal`
+  stop from idle-eviction below -- silently resurrecting a chess game's two
+  Stockfish subprocesses back at whatever position they started at, out of
+  sync with however many moves the DB has recorded since, while
+  `ensure_started/4`'s `Registry.lookup` found that stale pid already
+  registered and never called `start_child` with the real current moves at
+  all. That desync is what produced "resumed game has an incoherent board":
+  a human move legal in the real (DB) position could be rejected as illegal
+  against the stale in-memory one, or worse, silently misapplied against it.
   """
-  use GenServer
+  use GenServer, restart: :temporary
   require Logger
 
   alias GamesTutor.Chess.{MoveClassifier, UciInfo}

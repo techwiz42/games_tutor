@@ -76,8 +76,17 @@ defmodule GamesTutorWeb.GameController do
     end
   end
 
-  # Each hint is a real engine query -- bound per-user cost.
-  @hint_limit 30
+  # NOT a real engine query -- Chess/Go.GameServer's hint/1 replies from
+  # last_analysis, already cached from the move that produced the current
+  # position, with zero extra engine cost. This bucket is also shared with
+  # the voice tutor's own request_hint tool calls (VoiceSession's tool
+  # endpoints are the same ordinary REST actions, see its moduledoc), so it
+  # covers both instruction mode's one-fetch-per-move auto-hint AND
+  # anything the tutor asks for during a session. Bounded loosely against
+  # scripted abuse of the endpoint itself (DB lookup + GenServer call per
+  # request), not per-hint engine cost -- a single long game with
+  # instruction mode on can easily exceed a much smaller number of turns.
+  @hint_limit 600
   @hint_window_seconds 3600
 
   def hint(conn, %{"id" => id}) do
